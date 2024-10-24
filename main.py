@@ -1,13 +1,15 @@
-import os
 import lancedb
 import pyarrow as pa
-from PIL import Image
 from tqdm import tqdm
 from transformers import CLIPProcessor, CLIPModel
-from exif import Image as ExifImage
 from datetime import datetime
 from pillow_heif import register_heif_opener
-import io
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.applications.resnet import ResNet50, preprocess_input
+from get_exif import get_exif_data
+import os
+
 
 # Register HEIF opener with Pillow
 register_heif_opener()
@@ -16,7 +18,7 @@ register_heif_opener()
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-dims = 512
+dims = 2048
 
 uri = "data/photos-1"
 db = lancedb.connect(uri)
@@ -38,42 +40,23 @@ imgs_schema = pa.schema([
 ])
 imgs_tbl = db.create_table("images", schema=imgs_schema)
 
+# Load the pretrained ResNet model
+model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
-def get_exif_data(image_path):
-    try:
-        # For HEIF/HEIC files, convert to JPEG in memory first
-        if image_path.lower().endswith(('.heic', '.heif')):
-            with Image.open(image_path) as img:
-                # Convert to RGB if necessary
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                # Save as JPEG to bytes buffer
-                buffer = io.BytesIO()
-                img.save(buffer, format='JPEG')
-                buffer.seek(0)
-                exif_image = ExifImage(buffer)
-        else:
-            # For regular images, read directly
-            with open(image_path, 'rb') as image_file:
-                exif_image = ExifImage(image_file)
+# Function to preprocess the image
+def load_and_preprocess_image(image_path):
+    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
+    img_array = tf.keras.preprocessing.image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+    return preprocess_input(img_array)
 
-        # Extract date
-        date = None
-        if hasattr(exif_image, 'datetime_original'):
-            date = exif_image.datetime_original
-        elif hasattr(exif_image, 'datetime'):
-            date = exif_image.datetime
-
-        # Extract location
-        location = None
-        if hasattr(exif_image, 'gps_latitude') and hasattr(exif_image, 'gps_longitude'):
-            location = f"{exif_image.gps_latitude}, {exif_image.gps_longitude}"
-
-        return date, location
-    except Exception as e:
-        print(f"Warning: Could not extract EXIF data from {image_path}: {str(e)}")
-        return None, None
-
+# Extract embeddings
+def get_embedding(image_path):
+    processed_image = load_and_preprocess_image(image_path)
+    embedding = model.predict(processed_image)
+    # Normalize the embedding
+    embedding = embedding / np.linalg.norm(embedding)  # L2 normalization
+    return embedding
 
 def process_images(folder_path, batch_size=100):
     image_id = 0
@@ -85,15 +68,6 @@ def process_images(folder_path, batch_size=100):
             continue
 
         try:
-            # Load and process the image
-            with Image.open(image_path) as image:
-                # Convert to RGB if necessary
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-
-                # Process with CLIP
-                inputs = processor(images=image, return_tensors="pt", padding=True)
-                image_features = model.get_image_features(**inputs).detach().numpy().flatten().tolist()
 
             # Get EXIF data
             date, location = get_exif_data(image_path)
@@ -104,9 +78,11 @@ def process_images(folder_path, batch_size=100):
                     print(f"Warning: Could not parse date {date} for {image_path}")
                     date = None
 
+            vec = get_embedding(image_path).tolist()[0]
+
             batch.append({
                 "image_id": image_id,
-                "vector": image_features,
+                "vector": vec,
                 "image_path": image_path,
                 "people_ids": [],
                 "date": date,
@@ -127,7 +103,7 @@ def process_images(folder_path, batch_size=100):
     if batch:
         yield batch
 
-
-# Add images to the database in batches
-for batch in process_images("ex-images"):
-    imgs_tbl.add(batch)
+if __name__ == "__main__":
+    # Add images to the database in batches
+    for batch in process_images("ex-images"):
+        imgs_tbl.add(batch)

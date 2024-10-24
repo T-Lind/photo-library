@@ -1,18 +1,26 @@
-from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.applications.resnet import ResNet50, preprocess_input
 
-# Load the CLIP model
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+# Load the pretrained ResNet model with average pooling
+model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
-# Prepare the image
-image_path = r"C:\Users\tenant\PycharmProjects\photo-library\ex-images\image000000.JPG"
-image = Image.open(image_path)
+# Function to preprocess the image
+def load_and_preprocess_image(image_path):
+    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
+    img_array = tf.keras.preprocessing.image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+    return preprocess_input(img_array)
 
-# Process the image and generate embeddings
-inputs = processor(images=image, return_tensors="pt", padding=True)
-image_features = model.get_image_features(**inputs)
+# Extract embeddings
+def get_embedding(image_path):
+    processed_image = load_and_preprocess_image(image_path)
+    embedding = model.predict(processed_image)
+    # Normalize the embedding
+    embedding = embedding / np.linalg.norm(embedding)  # L2 normalization
+    return embedding
 
-# The image embedding is now in image_features
-print(image_features.shape)  # Should be (1, 512) for the base model
-print(image_features)
+# Example usage
+embedding = get_embedding('ex-images/image000000.JPG')
+print(embedding.shape)  # Should output (1, 2048) for ResNet50 with avg pooling
+print(embedding.tolist()[0])

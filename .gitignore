@@ -1,4 +1,5 @@
 *.json
 ex-images
+sm-images
 .venv
 .idea
