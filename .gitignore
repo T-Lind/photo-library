@@ -1,0 +1,4 @@
+*.json
+ex-images
+.venv
+.idea
