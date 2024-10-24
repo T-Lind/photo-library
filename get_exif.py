@@ -3,7 +3,6 @@ import io
 import pyheif
 import exifread
 import re
-import os
 from PIL.ExifTags import TAGS, GPSTAGS
 
 

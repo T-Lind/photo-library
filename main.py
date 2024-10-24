@@ -4,9 +4,7 @@ from tqdm import tqdm
 from transformers import CLIPProcessor, CLIPModel
 from datetime import datetime
 from pillow_heif import register_heif_opener
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications.resnet import ResNet50, preprocess_input
+from get_emb import get_embedding
 from get_exif import get_exif_data
 import os
 
@@ -20,7 +18,7 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 dims = 2048
 
-uri = "data/photos-1"
+uri = "data/photos-2"
 db = lancedb.connect(uri)
 
 # Constructs tables
@@ -40,23 +38,7 @@ imgs_schema = pa.schema([
 ])
 imgs_tbl = db.create_table("images", schema=imgs_schema)
 
-# Load the pretrained ResNet model
-model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
 
-# Function to preprocess the image
-def load_and_preprocess_image(image_path):
-    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.preprocessing.image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
-    return preprocess_input(img_array)
-
-# Extract embeddings
-def get_embedding(image_path):
-    processed_image = load_and_preprocess_image(image_path)
-    embedding = model.predict(processed_image)
-    # Normalize the embedding
-    embedding = embedding / np.linalg.norm(embedding)  # L2 normalization
-    return embedding
 
 def process_images(folder_path, batch_size=100):
     image_id = 0
@@ -84,7 +66,7 @@ def process_images(folder_path, batch_size=100):
                 "image_id": image_id,
                 "vector": vec,
                 "image_path": image_path,
-                "people_ids": [],
+                "people_ids": [],  # TODO: implement this
                 "date": date,
                 "location": location
             })
