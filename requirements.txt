@@ -13,4 +13,4 @@ exif~=1.6.0
 requests~=2.32.3
 ExifRead~=3.0.0
 pyheif~=0.8.0
-tensorflow~=2.17.0
+torch~=2.5.0

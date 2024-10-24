@@ -1,5 +1,4 @@
 import lancedb
-import pandas as pd
 
 uri = "../data/photos-2"
 db = lancedb.connect(uri)

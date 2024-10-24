@@ -1,23 +1,22 @@
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications.resnet import ResNet50, preprocess_input
+from transformers import CLIPProcessor, CLIPModel
+import torch
+from PIL import Image
 
-# Load the pretrained ResNet model
-model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
-
-
-# Function to preprocess the image
-def load_and_preprocess_image(image_path):
-    img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-    img_array = tf.keras.preprocessing.image.img_to_array(img)
-    img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
-    return preprocess_input(img_array)
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
 
-# Extract embeddings
-def get_embedding(image_path):
-    processed_image = load_and_preprocess_image(image_path)
-    embedding = model.predict(processed_image)
-    # Normalize the embedding
-    embedding = embedding / np.linalg.norm(embedding)  # L2 normalization
-    return embedding
+def get_image_embedding(image_path):
+    image = Image.open(image_path)
+    inputs = processor(images=image, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        embeddings = model.get_image_features(**inputs)
+    return embeddings.cpu().numpy().flatten().tolist()
+
+def get_text_embedding(query):
+    inputs = processor(text=query, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        embeddings = model.get_text_features(**inputs)
+    return embeddings.cpu().numpy().flatten().tolist()
+
+
