@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from datetime import date
 from pydantic import BaseModel
@@ -18,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="Photo Search API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], # Frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Configuration
 DB_URI = "data/photos-256"
