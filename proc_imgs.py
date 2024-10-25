@@ -111,7 +111,6 @@ def process_faces(folder_path, faces_dir="cropped_faces", save_dir="saves"):
 
     os.makedirs(faces_dir, exist_ok=True)
 
-    print("Processing faces in images...")
     for image_name in tqdm(os.listdir(folder_path)):
         image_path = os.path.join(folder_path, image_name)
 
