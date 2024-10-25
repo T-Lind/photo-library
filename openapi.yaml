@@ -1,0 +1,262 @@
+openapi: 3.0.0
+info:
+  title: Photo Management System API
+  description: API for semantic photo search and management with face recognition capabilities
+  version: 1.0.0
+
+servers:
+  - url: /api/v1
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+
+    Person:
+      type: object
+      properties:
+        people_id:
+          type: integer
+        name:
+          type: string
+        photo_count:
+          type: integer
+        face_image_url:
+          type: string
+          description: URL to the cropped face image of this person
+
+    Image:
+      type: object
+      properties:
+        image_id:
+          type: integer
+        date:
+          type: string
+          format: date-time
+        location:
+          type: string
+        people_ids:
+          type: array
+          items:
+            type: integer
+        thumbnail_url:
+          type: string
+
+    SearchResults:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        per_page:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Image'
+
+  responses:
+    NotFound:
+      description: The specified resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+paths:
+  /search:
+    post:
+      summary: Search photos using multiple criteria
+      description: Returns photos matching the combination of semantic query, date range, and people filters
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                  description: Optional semantic search query
+                  example: "sunset at the beach"
+                start_date:
+                  type: string
+                  format: date
+                  description: Optional start date for filtering
+                end_date:
+                  type: string
+                  format: date
+                  description: Optional end date for filtering
+                people_ids:
+                  type: array
+                  description: Optional list of people IDs to filter by
+                  items:
+                    type: integer
+                page:
+                  type: integer
+                  default: 1
+                per_page:
+                  type: integer
+                  default: 20
+      responses:
+        '200':
+          description: Search results matching all specified criteria
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResults'
+
+  /images/{image_id}:
+    get:
+      summary: Get original image
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The image file
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /images/{image_id}/thumbnail:
+    get:
+      summary: Get image thumbnail
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: size
+          in: query
+          schema:
+            type: string
+            enum: [ small, medium, large ]
+            default: medium
+      responses:
+        '200':
+          description: The thumbnail image
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /people:
+    get:
+      summary: List all people detected in photos
+      responses:
+        '200':
+          description: List of people
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Person'
+
+  /people/{people_id}:
+    get:
+      summary: Get person details
+      parameters:
+        - name: people_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Person details including their face image
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      summary: Update person details (e.g., name)
+      parameters:
+        - name: people_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Updated person details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /people/{people_id}/face:
+    get:
+      summary: Get person's face image
+      parameters:
+        - name: people_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The cropped face image for this person
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /people/merge:
+    post:
+      summary: Merge two person entries (for when same person is detected as different)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source_id:
+                  type: integer
+                target_id:
+                  type: integer
+      responses:
+        '200':
+          description: Successfully merged people
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Person'
+
+#                TODO: BE ABLE TO DELETE A PERSON, WHICH MIGHT BE SOMETHING THAT ISN'T ACTUALLY A FACE.

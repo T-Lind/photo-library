@@ -1,167 +1,215 @@
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from typing import List, Optional
+from datetime import date
+from pydantic import BaseModel
 import lancedb
-import pyarrow as pa
-from tqdm import tqdm
-from transformers import CLIPProcessor, CLIPModel
-from datetime import datetime
-from get_emb import get_image_embedding
-from get_exif import get_exif_data
-from proc_imgs import process_faces
-import os
+import pandas as pd
+from pathlib import Path
 import logging
+from get_emb import get_text_embedding
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Load the CLIP model
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+# Initialize FastAPI app
+app = FastAPI(title="Photo Search API")
 
-# LITERALS
-DIMS = 512
-NUM_PARTITIONS = 16
-NUM_SUB_VECTORS = 8
-BATCH_SIZE = 100
-
-SUPPORTED_FORMATS = {'.png', '.jpg', '.jpeg', '.heic', '.heif'}
-
-
-def is_supported_image(filename):
-    """Check if the file is a supported image format"""
-    return any(filename.lower().endswith(ext) for ext in SUPPORTED_FORMATS)
+# Configuration
+DB_URI = "data/photos"
+FACE_IMAGES_DIR = "cropped_faces"
+IMAGES_PER_PAGE = 20
+NUM_PROBES = 20  # For vector search
+REFINE_FACTOR = 10  # For vector search refinement
 
 
-def setup_database(uri):
-    """Set up the LanceDB database and tables"""
-    db = lancedb.connect(uri)
-
-    # Create people table
-    people_schema = pa.schema([
-        pa.field("people_id", pa.int32()),
-        pa.field("name", pa.string()),
-    ])
-
-    # Drop existing tables if they exist
-    if "people" in db.table_names():
-        db.drop_table("people")
-    if "images" in db.table_names():
-        db.drop_table("images")
-
-    people_tbl = db.create_table("people", schema=people_schema)
-
-    # Create images table
-    imgs_schema = pa.schema([
-        pa.field("image_id", pa.int32()),
-        pa.field("vector", pa.list_(pa.float32(), list_size=DIMS)),
-        pa.field("image_path", pa.string()),
-        pa.field("people_ids", pa.list_(pa.int32())),
-        pa.field("date", pa.timestamp('ms')),
-        pa.field("location", pa.string()),
-    ])
-    imgs_tbl = db.create_table("images", schema=imgs_schema)
-    return db, people_tbl, imgs_tbl
+class SearchRequest(BaseModel):
+    query: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    people_ids: Optional[List[int]] = None
+    page: int = 1
+    per_page: int = IMAGES_PER_PAGE
 
 
-def process_images(folder_path, image_to_people, batch_size=100):
-    """Process images and yield batches for database insertion"""
-    image_id = 0
-    batch = []
-    failed_images = []
+class Person(BaseModel):
+    people_id: int
+    name: str
+    photo_count: int
+    face_image_url: str
 
-    # Get list of all image files first
-    image_files = [f for f in os.listdir(folder_path) if is_supported_image(f) and 'cropped_faces' not in f]
 
-    for image_name in tqdm(image_files, desc="Processing images"):
-        image_path = os.path.join(folder_path, image_name)
-        try:
-            # Get EXIF data
-            date, location = get_exif_data(image_path)
-            if date:
-                try:
-                    date = datetime.strptime(date, '%Y:%m:%d %H:%M:%S')
-                except ValueError:
-                    logging.warning(f"Could not parse date {date} for {image_path}")
-                    date = None
+class SearchResults(BaseModel):
+    total: int
+    page: int
+    per_page: int
+    results: List[dict]
 
-            # Get image embedding
-            try:
-                vec = get_image_embedding(image_path)
-            except Exception as e:
-                logging.error(f"Failed to get embedding for {image_path}: {str(e)}")
-                failed_images.append((image_path, "embedding_failed"))
-                continue
 
-            # Get people IDs for this image
-            people_ids = image_to_people.get(image_name, [])
-            people_ids = list(set(people_ids))  # remove duplicates
+def get_db():
+    """Database connection factory"""
+    try:
+        db = lancedb.connect(DB_URI)
+        return db
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        raise HTTPException(status_code=500, detail="Database connection failed")
 
-            batch.append({
-                "image_id": image_id,
-                "vector": vec,
-                "image_path": image_path,
-                "people_ids": people_ids,
-                "date": date,
-                "location": str(location) if location else ""
+
+def apply_filters(query: pd.DataFrame, start_date: Optional[date],
+                  end_date: Optional[date], people_ids: Optional[List[int]]) -> pd.DataFrame:
+    """Apply date and people filters to search results"""
+    if start_date:
+        query = query[query['date'] >= pd.Timestamp(start_date)]
+    if end_date:
+        query = query[query['date'] <= pd.Timestamp(end_date)]
+    if people_ids:
+        # Filter for images containing any of the specified people
+        query = query[query['people_ids'].apply(
+            lambda x: any(pid in x for pid in people_ids)
+        )]
+    return query
+
+
+@app.post("/api/v1/search", response_model=SearchResults)
+async def search_photos(search_request: SearchRequest):
+    """
+    Combined semantic, temporal, and people-based photo search endpoint.
+    """
+    try:
+        db = get_db()
+        table = db["images"]
+
+        # Start with all images if no semantic query
+        if search_request.query:
+            query_emb = get_text_embedding(search_request.query)
+            results_df = table.search(query_emb) \
+                .limit(1000) \
+                .nprobes(NUM_PROBES) \
+                .refine_factor(REFINE_FACTOR) \
+                .to_pandas()
+        else:
+            results_df = table.to_pandas()
+
+        # Apply filters
+        filtered_df = apply_filters(
+            results_df,
+            search_request.start_date,
+            search_request.end_date,
+            search_request.people_ids
+        )
+
+        # Pagination
+        start_idx = (search_request.page - 1) * search_request.per_page
+        end_idx = start_idx + search_request.per_page
+        paginated_df = filtered_df.iloc[start_idx:end_idx]
+
+        # Format results
+        results = []
+        for _, row in paginated_df.iterrows():
+            results.append({
+                "image_id": int(row["image_id"]),
+                "date": row["date"].isoformat() if pd.notnull(row["date"]) else None,
+                "location": row["location"] if pd.notnull(row["location"]) else "",
+                "people_ids": row["people_ids"],
+                "thumbnail_url": f"/api/v1/images/{row['image_id']}/thumbnail"
             })
-            image_id += 1
 
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
+        return SearchResults(
+            total=len(filtered_df),
+            page=search_request.page,
+            per_page=search_request.per_page,
+            results=results
+        )
 
-        except Exception as e:
-            logging.error(f"Error processing {image_name}: {str(e)}")
-            failed_images.append((image_path, str(e)))
-            continue
-
-    # Yield any remaining images in the last batch
-    if batch:
-        yield batch
-
-    # Report failed images
-    if failed_images:
-        logging.warning(f"\nFailed to process {len(failed_images)} images:")
-        for path, error in failed_images:
-            logging.warning(f"- {path}: {error}")
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-def main(folder_path, faces_dir, db_uri):
-    """Main function to process images and populate the database"""
-    logging.info("Step 1: Setting up database...")
-    db, people_tbl, imgs_tbl = setup_database(db_uri)
+@app.get("/api/v1/people/{people_id}")
+async def get_person(people_id: int):
+    """
+    Get details about a specific person, including their face image.
+    """
+    try:
+        db = get_db()
+        people_table = db["people"]
+        images_table = db["images"]
 
-    logging.info("\nStep 2: Processing faces and clustering...")
-    image_to_people, label_to_person_id = process_faces(folder_path, faces_dir)
+        # Get person details
+        person_df = people_table.to_pandas()
+        person = person_df[person_df["people_id"] == people_id]
 
-    num_people = len(label_to_person_id)
-    logging.info(f"Found {num_people} unique people across all images")
+        if person.empty:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    logging.info("Step 3: Populating people table...")
-    people_entries = [
-        {"people_id": person_id, "name": ""}
-        for person_id in range(num_people)
-    ]
-    print("people_entries:", people_entries)
-    if people_entries:
-        people_tbl.add(people_entries)
+        # Count photos with this person
+        images_df = images_table.to_pandas()
+        photo_count = len(images_df[
+                              images_df["people_ids"].apply(lambda x: people_id in x)
+                          ])
 
-    logging.info("Step 4: Processing images and populating images table...")
-    total_processed = 0
-    for batch in process_images(folder_path, image_to_people, batch_size=BATCH_SIZE):
-        imgs_tbl.add(batch)
-        total_processed += len(batch)
+        # Check if face image exists
+        face_path = Path(FACE_IMAGES_DIR) / f"person_{people_id}.jpg"
+        if not face_path.exists():
+            raise HTTPException(status_code=404, detail="Face image not found")
 
-    logging.info(f"Successfully processed {total_processed} images")
+        return Person(
+            people_id=people_id,
+            name=person.iloc[0]["name"],
+            photo_count=photo_count,
+            face_image_url=f"/api/v1/people/{people_id}/face"
+        )
 
-    # Create index for vector similarity search
-    logging.info("Creating vector similarity search index...")
-    imgs_tbl.create_index(num_partitions=NUM_PARTITIONS, num_sub_vectors=NUM_SUB_VECTORS)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get person details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    logging.info("Processing complete!")
-    return db
+
+@app.get("/api/v1/people/{people_id}/face")
+async def get_person_face(people_id: int):
+    """
+    Get the face image for a specific person.
+    """
+    face_path = Path(FACE_IMAGES_DIR) / f"person_{people_id}.jpg"
+    if not face_path.exists():
+        raise HTTPException(status_code=404, detail="Face image not found")
+
+    return FileResponse(face_path, media_type="image/jpeg")
 
 
-if __name__ == "__main__":
-    folder_path = "256-images"
-    db_uri = "data/photos-256"
-    faces_dir = "cropped_faces_256"
-    main(folder_path, faces_dir, db_uri)
+@app.patch("/api/v1/people/{people_id}")
+async def update_person(people_id: int, name: str):
+    """
+    Update a person's name.
+    """
+    try:
+        db = get_db()
+        people_table = db["people"]
+
+        # Update the name
+        people_df = people_table.to_pandas()
+        if people_id not in people_df["people_id"].values:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        people_df.loc[people_df["people_id"] == people_id, "name"] = name
+
+        # Write back to database
+        people_table.delete()
+        people_table = db.create_table("people", data=people_df)
+
+        # Return updated person details
+        return await get_person(people_id)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
