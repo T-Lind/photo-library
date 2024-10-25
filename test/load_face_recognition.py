@@ -169,7 +169,7 @@ def main(folder_path, output_file):
 
 
 # Folder containing images and JSON output file
-folder_path = "../ex-images"
+folder_path = "../spec"
 output_file = "clustered_faces.json"
 
 if __name__ == "__main__":

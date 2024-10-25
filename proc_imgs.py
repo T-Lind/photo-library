@@ -10,6 +10,7 @@ from tqdm import tqdm
 # Register HEIF opener with Pillow
 register_heif_opener()
 
+
 def convert_heic_to_jpg(heic_path):
     """Convert HEIC/HEIF to JPEG using pillow-heif"""
     with Image.open(heic_path) as image:
@@ -18,13 +19,12 @@ def convert_heic_to_jpg(heic_path):
         return jpeg_path
 
 
-def process_faces(folder_path):
+def process_faces(folder_path, faces_dir="cropped_faces"):
     """Process all images in folder and return face clustering results"""
     image_encodings = []
-    faces_dir = "cropped_faces"
+
     os.makedirs(faces_dir, exist_ok=True)
 
-    print("Processing faces in images...")
     for image_name in tqdm(os.listdir(folder_path)):
         image_path = os.path.join(folder_path, image_name)
 
@@ -59,7 +59,7 @@ def process_faces(folder_path):
 
         except Exception as e:
             print(f"Error processing faces in {image_name}: {str(e)}")
-            continue
+            return {}, {}
 
     # Perform clustering if faces were found
     if not image_encodings:
@@ -102,4 +102,3 @@ def process_faces(folder_path):
                 face_img.save(face_filename, "JPEG")
 
     return dict(image_to_people), label_to_person_id
-

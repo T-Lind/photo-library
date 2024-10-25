@@ -7,16 +7,27 @@ from get_emb import get_image_embedding
 from get_exif import get_exif_data
 from proc_imgs import process_faces
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load the CLIP model
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 # LITERALS
-DIMS = 512  # TODO: MAKE sure this matches the embedding dimension.
-NUM_PARTITIONS = 32
-NUM_SUB_VECTORS = 10
+DIMS = 512
+NUM_PARTITIONS = 16
+NUM_SUB_VECTORS = 8
 BATCH_SIZE = 100
+
+SUPPORTED_FORMATS = {'.png', '.jpg', '.jpeg', '.heic', '.heif'}
+
+
+def is_supported_image(filename):
+    """Check if the file is a supported image format"""
+    return any(filename.lower().endswith(ext) for ext in SUPPORTED_FORMATS)
 
 
 def setup_database(uri):
@@ -28,6 +39,13 @@ def setup_database(uri):
         pa.field("people_id", pa.int32()),
         pa.field("name", pa.string()),
     ])
+
+    # Drop existing tables if they exist
+    if "people" in db.table_names():
+        db.drop_table("people")
+    if "images" in db.table_names():
+        db.drop_table("images")
+
     people_tbl = db.create_table("people", schema=people_schema)
 
     # Create images table
@@ -47,13 +65,13 @@ def process_images(folder_path, image_to_people, batch_size=100):
     """Process images and yield batches for database insertion"""
     image_id = 0
     batch = []
+    failed_images = []
 
-    for image_name in tqdm(os.listdir(folder_path)):
+    # Get list of all image files first
+    image_files = [f for f in os.listdir(folder_path) if is_supported_image(f) and 'cropped_faces' not in f]
+
+    for image_name in tqdm(image_files, desc="Processing images"):
         image_path = os.path.join(folder_path, image_name)
-        if not image_path.lower().endswith(
-                ('.png', '.jpg', '.jpeg', '.heic', '.heif')) or 'cropped_faces' in image_path:
-            continue
-
         try:
             # Get EXIF data
             date, location = get_exif_data(image_path)
@@ -61,16 +79,20 @@ def process_images(folder_path, image_to_people, batch_size=100):
                 try:
                     date = datetime.strptime(date, '%Y:%m:%d %H:%M:%S')
                 except ValueError:
-                    print(f"Warning: Could not parse date {date} for {image_path}")
+                    logging.warning(f"Could not parse date {date} for {image_path}")
                     date = None
 
             # Get image embedding
-            vec = get_image_embedding(image_path)
+            try:
+                vec = get_image_embedding(image_path)
+            except Exception as e:
+                logging.error(f"Failed to get embedding for {image_path}: {str(e)}")
+                failed_images.append((image_path, "embedding_failed"))
+                continue
 
             # Get people IDs for this image
             people_ids = image_to_people.get(image_name, [])
-            # remove duplicates
-            people_ids = list(set(people_ids))
+            people_ids = list(set(people_ids))  # remove duplicates
 
             batch.append({
                 "image_id": image_id,
@@ -78,54 +100,68 @@ def process_images(folder_path, image_to_people, batch_size=100):
                 "image_path": image_path,
                 "people_ids": people_ids,
                 "date": date,
-                "location": location
+                "location": str(location) if location else ""
             })
             image_id += 1
 
-            # If batch is full, yield it and reset
             if len(batch) >= batch_size:
                 yield batch
                 batch = []
 
         except Exception as e:
-            print(f"Error processing {image_name}: {str(e)}")
+            logging.error(f"Error processing {image_name}: {str(e)}")
+            failed_images.append((image_path, str(e)))
             continue
 
     # Yield any remaining images in the last batch
     if batch:
         yield batch
 
+    # Report failed images
+    if failed_images:
+        logging.warning(f"\nFailed to process {len(failed_images)} images:")
+        for path, error in failed_images:
+            logging.warning(f"- {path}: {error}")
 
-def main(folder_path, db_uri):
+
+def main(folder_path, faces_dir, db_uri):
     """Main function to process images and populate the database"""
-    print("Step 1: Setting up database...")
+    logging.info("Step 1: Setting up database...")
     db, people_tbl, imgs_tbl = setup_database(db_uri)
 
-    print("\nStep 2: Processing faces and clustering...")
-    image_to_people, label_to_person_id = process_faces(folder_path)
+    logging.info("\nStep 2: Processing faces and clustering...")
+    image_to_people, label_to_person_id = process_faces(folder_path, faces_dir)
 
-    print(f"Found {len(label_to_person_id)} unique people across all images")
+    num_people = len(label_to_person_id)
+    logging.info(f"Found {num_people} unique people across all images")
 
-    print("Step 3: Populating people table...")
-    # Create entries for all identified people
+    logging.info("Step 3: Populating people table...")
     people_entries = [
         {"people_id": person_id, "name": ""}
-        for person_id in range(len(label_to_person_id))
+        for person_id in range(num_people)
     ]
-    people_tbl.add(people_entries)
+    print("people_entries:", people_entries)
+    if people_entries:
+        people_tbl.add(people_entries)
 
-    print("Step 4: Processing images and populating images table...")
-    # Add images to the database in batches
+    logging.info("Step 4: Processing images and populating images table...")
+    total_processed = 0
     for batch in process_images(folder_path, image_to_people, batch_size=BATCH_SIZE):
         imgs_tbl.add(batch)
+        total_processed += len(batch)
 
+    logging.info(f"Successfully processed {total_processed} images")
+
+    # Create index for vector similarity search
+    logging.info("Creating vector similarity search index...")
     imgs_tbl.create_index(num_partitions=NUM_PARTITIONS, num_sub_vectors=NUM_SUB_VECTORS)
 
-    print("Processing complete!")
+    logging.info("Processing complete!")
     return db
 
 
 if __name__ == "__main__":
-    folder_path = "ex-images"
-    db_uri = "data/photos-3"
-    main(folder_path, db_uri)
+    folder_path = "256-images"
+    db_uri = "data/photos-256"
+    faces_dir = "cropped_faces_256"
+    main(folder_path, faces_dir, db_uri)

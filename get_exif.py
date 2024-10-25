@@ -29,13 +29,15 @@ def get_coordinates(geotags):
 
 def get_geotagging(exif):
     if not exif:
-        raise ValueError("No EXIF metadata found")
+        return None
+        # raise ValueError("No EXIF metadata found")
 
     geotagging = {}
     for (idx, tag) in TAGS.items():
         if tag == 'GPSInfo':
             if idx not in exif:
-                raise ValueError("No EXIF geotagging found")
+                return None
+                # raise ValueError("No EXIF geotagging found")
 
             for (key, val) in GPSTAGS.items():
                 if key in exif[idx]:
@@ -48,13 +50,16 @@ def get_exif_data(ifile):
         image = Image.open(ifile)
         exifdata = image.getexif()
         geotags = get_geotagging(exifdata)
-        if "{1:" in str(exifdata[34853]):
-            lat_long = get_coordinates(geotags)
-            # geo_loc = get_location(str(lat_long)[1:-1])
-            geo_loc = lat_long
+        try:
+            if "{1:" in str(exifdata[34853]):
+                lat_long = get_coordinates(geotags)
+                # geo_loc = get_location(str(lat_long)[1:-1])
+                geo_loc = lat_long
 
-        else:
-            geo_loc = ""  # No loc data
+            else:
+                geo_loc = ""  # No loc data
+        except KeyError as e:
+            geo_loc = ""
 
         return exifdata.get(36867), geo_loc
     elif re.search(r'heic$', str(ifile), re.IGNORECASE):
