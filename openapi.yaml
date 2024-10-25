@@ -189,7 +189,6 @@ paths:
                 $ref: '#/components/schemas/Person'
         '404':
           $ref: '#/components/responses/NotFound'
-
     patch:
       summary: Update person details (e.g., name)
       parameters:
@@ -214,6 +213,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Person'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      summary: Delete or hide a person
+      parameters:
+        - name: people_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: permanent
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Person successfully deleted/hidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  affected_images:
+                    type: integer
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -258,5 +287,3 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Person'
-
-#                TODO: BE ABLE TO DELETE A PERSON, WHICH MIGHT BE SOMETHING THAT ISN'T ACTUALLY A FACE.

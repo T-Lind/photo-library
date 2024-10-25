@@ -16,3 +16,4 @@ pyheif~=0.8.0
 torch~=2.5.0
 pydantic~=2.9.2
 fastapi~=0.115.3
+uvicorn~=0.32.0

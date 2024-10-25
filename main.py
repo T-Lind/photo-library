@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Photo Search API")
 
 # Configuration
-DB_URI = "data/photos"
-FACE_IMAGES_DIR = "cropped_faces"
+DB_URI = "data/photos-256"
+FACE_IMAGES_DIR = "cropped_faces_256"
 IMAGES_PER_PAGE = 20
 NUM_PROBES = 20  # For vector search
 REFINE_FACTOR = 10  # For vector search refinement
@@ -78,49 +78,88 @@ def apply_filters(query: pd.DataFrame, start_date: Optional[date],
 @app.post("/api/v1/search", response_model=SearchResults)
 async def search_photos(search_request: SearchRequest):
     """
-    Combined semantic, temporal, and people-based photo search endpoint.
+    Combined semantic, temporal, and people-based photo search endpoint with optimized pre-filtering.
     """
     try:
         db = get_db()
         table = db["images"]
 
-        # Start with all images if no semantic query
+        # Build the where clause for pre-filtering
+        where_conditions = []
+
+        # Date filters
+        if search_request.start_date:
+            where_conditions.append(
+                f"date >= TIMESTAMP '{search_request.start_date}'"
+            )
+        if search_request.end_date:
+            where_conditions.append(
+                f"date <= TIMESTAMP '{search_request.end_date}'"
+            )
+
+        # People filter using array_contains
+        if search_request.people_ids:
+            people_conditions = [
+                f"array_contains(people_ids, {pid})"
+                for pid in search_request.people_ids
+            ]
+            where_conditions.append(f"({' OR '.join(people_conditions)})")
+
+        # Combine all conditions
+        where_clause = " AND ".join(where_conditions) if where_conditions else None
+
+        # Calculate pagination
+        offset = (search_request.page - 1) * search_request.per_page
+
         if search_request.query:
+            # Semantic search with pre-filtering
             query_emb = get_text_embedding(search_request.query)
-            results_df = table.search(query_emb) \
-                .limit(1000) \
-                .nprobes(NUM_PROBES) \
-                .refine_factor(REFINE_FACTOR) \
+
+            search_query = table.search(
+                query_emb,
+                vector_column_name="vector",  # Match schema field name
+                where=where_clause,
+                prefilter=True  # Enable pre-filtering
+            )
+
+            # Apply pagination after search
+            results_df = search_query.limit(search_request.per_page) \
+                .offset(offset) \
                 .to_pandas()
+
+            # Get total count with same filters
+            total_count = len(table.search(
+                query_emb,
+                vector_column_name="vector",
+                where=where_clause,
+                prefilter=True
+            ).to_pandas())
+
         else:
-            results_df = table.to_pandas()
+            # No semantic search, just filtered pagination
+            base_query = table
+            if where_clause:
+                base_query = base_query.filter(where_clause)
 
-        # Apply filters
-        filtered_df = apply_filters(
-            results_df,
-            search_request.start_date,
-            search_request.end_date,
-            search_request.people_ids
-        )
+            results_df = base_query.limit(search_request.per_page) \
+                .offset(offset) \
+                .to_pandas()
 
-        # Pagination
-        start_idx = (search_request.page - 1) * search_request.per_page
-        end_idx = start_idx + search_request.per_page
-        paginated_df = filtered_df.iloc[start_idx:end_idx]
+            total_count = len(base_query.to_pandas())
 
-        # Format results
+        # Format results according to API schema
         results = []
-        for _, row in paginated_df.iterrows():
+        for _, row in results_df.iterrows():
             results.append({
                 "image_id": int(row["image_id"]),
                 "date": row["date"].isoformat() if pd.notnull(row["date"]) else None,
                 "location": row["location"] if pd.notnull(row["location"]) else "",
-                "people_ids": row["people_ids"],
+                "people_ids": row["people_ids"].tolist() if isinstance(row["people_ids"], (list, pd.Series)) else [],
                 "thumbnail_url": f"/api/v1/images/{row['image_id']}/thumbnail"
             })
 
         return SearchResults(
-            total=len(filtered_df),
+            total=total_count,
             page=search_request.page,
             per_page=search_request.per_page,
             results=results
@@ -212,4 +251,55 @@ async def update_person(people_id: int, name: str):
         raise
     except Exception as e:
         logger.error(f"Failed to update person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/people", response_model=List[Person])
+async def list_people():
+    """
+    List all people detected in photos, including their photo counts and face image URLs.
+    """
+    try:
+        db = get_db()
+        people_table = db["people"]
+        images_table = db["images"]
+
+        # Get all people
+        people_df = people_table.to_pandas()
+
+        # Get image counts for each person using a single pass through the images table
+        images_df = images_table.to_pandas()
+
+        # Calculate photo counts for all people at once
+        photo_counts = {}
+        for _, row in images_df.iterrows():
+            for person_id in row["people_ids"]:
+                photo_counts[person_id] = photo_counts.get(person_id, 0) + 1
+
+        # Build the response
+        people_list = []
+        for _, person in people_df.iterrows():
+            person_id = person["people_id"]
+
+            # Check if face image exists
+            face_path = Path(FACE_IMAGES_DIR) / f"person_{person_id}.jpg"
+
+            # Only include people who have a face image
+            if face_path.exists():
+                people_list.append(
+                    Person(
+                        people_id=person_id,
+                        name=person["name"],
+                        photo_count=photo_counts.get(person_id, 0),
+                        face_image_url=f"/api/v1/people/{person_id}/face"
+                    )
+                )
+
+        # Sort by photo count descending, then by name
+        people_list.sort(key=lambda x: (-x.photo_count, x.name))
+
+        return people_list
+
+    except Exception as e:
+        logger.error(f"Failed to list people: {e}")
         raise HTTPException(status_code=500, detail=str(e))
