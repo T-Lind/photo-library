@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from datetime import date
-from pydantic import BaseModel
+from datetime import date, datetime
+from pydantic import BaseModel, Field
 import lancedb
 import pandas as pd
 from pathlib import Path
@@ -49,8 +49,8 @@ THUMBNAIL_SIZES = {
 
 class SearchRequest(BaseModel):
     query: Optional[str] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
+    start_date: Optional[str] = Field(None, description="ISO format date string")
+    end_date: Optional[str] = Field(None, description="ISO format date string")
     people_ids: Optional[List[int]] = None
     page: int = 1
     per_page: int = IMAGES_PER_PAGE
@@ -102,16 +102,23 @@ async def search_photos(search_request: SearchRequest):
     """
     try:
         db = get_db()
-        table = db["images"]
+        images_table = db["images"]
 
         # Build the where clause conditions
         where_conditions = []
 
-        # Add date filters if provided
-        if search_request.start_date:
-            where_conditions.append(f"date >= TIMESTAMP '{search_request.start_date}'")
-        if search_request.end_date:
-            where_conditions.append(f"date <= TIMESTAMP '{search_request.end_date}'")
+        start_date = datetime.fromisoformat(search_request.start_date.replace('Z', '+00:00')) if search_request.start_date else None
+        end_date = datetime.fromisoformat(search_request.end_date.replace('Z', '+00:00')) if search_request.end_date else None
+
+        # Add date filters if provided, but handle null dates
+        if start_date:
+            where_conditions.append(
+                f"(date >= TIMESTAMP '{start_date.date()}' OR date IS NULL)"
+            )
+        if end_date:
+            where_conditions.append(
+                f"(date <= TIMESTAMP '{end_date.date()}' OR date IS NULL)"
+            )
 
         # Add people filter if provided
         if search_request.people_ids:
@@ -135,11 +142,11 @@ async def search_photos(search_request: SearchRequest):
             # Build and execute search with prefiltering
             if where_clause:
                 results = (
-                    table.search(query_emb)
+                    images_table.search(query_emb)
                     .where(where_clause, prefilter=True)
                 )
             else:
-                results = table.search(query_emb)
+                results = images_table.search(query_emb)
 
             # Get total count first
             total_count = len(results.to_arrow())
@@ -153,11 +160,9 @@ async def search_photos(search_request: SearchRequest):
             )
         else:
             # No semantic search, just filtering and pagination
-            query = table
+            query = images_table
             if where_clause:
                 query = query.search().where(where_clause)
-            else:
-                query = query.search()
 
             # Get total count
             total_count = len(query.to_arrow())
@@ -173,9 +178,19 @@ async def search_photos(search_request: SearchRequest):
         # Format results according to API schema
         results = []
         for _, row in results_df.iterrows():
+            date_value = row["date"]
+            formatted_date = None
+
+            # Only format valid dates after 1970
+            if pd.notnull(date_value) and isinstance(date_value, pd.Timestamp):
+                if date_value.year > 1970:
+                    formatted_date = date_value.isoformat()
+                else:
+                    formatted_date = None
+
             results.append({
                 "image_id": int(row["image_id"]),
-                "date": row["date"].isoformat() if pd.notnull(row["date"]) else None,
+                "date": formatted_date,  # Will be None for invalid/null dates
                 "location": row["location"] if pd.notnull(row["location"]) else "",
                 "people_ids": row["people_ids"].tolist() if isinstance(row["people_ids"], (list, pd.Series)) else [],
                 "thumbnail_url": f"/api/v1/images/{row['image_id']}/thumbnail"
@@ -246,29 +261,30 @@ async def get_person_face(people_id: int):
 
     return FileResponse(face_path, media_type="image/jpeg")
 
+class UpdatePersonRequest(BaseModel):
+    name: str
 
 @app.patch("/api/v1/people/{people_id}")
-async def update_person(people_id: int, name: str):
+async def update_person(people_id: int, request: UpdatePersonRequest = Body(...)):
     """
     Update a person's name.
     """
     try:
         db = get_db()
-        people_table = db["people"]
+        images_table = db.open_table("images")
 
-        # Update the name
-        people_df = people_table.to_pandas()
-        if people_id not in people_df["people_id"].values:
-            raise HTTPException(status_code=404, detail="Person not found")
+        images_df = images_table.to_pandas()
 
-        people_df.loc[people_df["people_id"] == people_id, "name"] = name
+        people_table = db.open_table("people")
 
-        # Write back to database
-        people_table.delete()
-        people_table = db.create_table("people", data=people_df)
 
-        # Return updated person details
-        return await get_person(people_id)
+        people_table.update(where=f"people_id = {people_id}", values={"name": request.name})
+        return Person(
+            people_id=people_id,
+            name=request.name,
+            photo_count=-1,
+            face_image_url=f"/api/v1/people/{people_id}/face"
+        )
 
     except HTTPException:
         raise
@@ -320,7 +336,7 @@ async def list_people():
 
         # Sort by photo count descending, then by name
         people_list.sort(key=lambda x: (-x.photo_count, x.name))
-
+        print("People list", people_list)
         return people_list
 
     except Exception as e:
