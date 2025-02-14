@@ -7,6 +7,9 @@ face_recognition, and stores everything in a LanceDB database for efficient retr
 With this system, you can store and search through your family photos locally! There are NO API calls and NO internet
 connectivity is required. Your personal photos stay private.
 
+## Redacted Example
+![Photo Example](https://github.com/T-Lind/photo-library/blob/master/photos-example.png)
+
 ## Features
 
 - **Semantic Image Search**: Using CLIP embeddings for natural language photo search
