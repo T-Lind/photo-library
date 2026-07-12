@@ -1,88 +1,75 @@
-from PIL import Image
 import io
-import pyheif
-import exifread
 import re
-from PIL.ExifTags import TAGS, GPSTAGS
+
+import exifread
+import pyheif
+from PIL import Image
+
+# EXIF IFD pointers and tag IDs
+EXIF_IFD = 0x8769
+GPS_IFD = 0x8825
+DATETIME_ORIGINAL = 36867
+DATETIME = 306
+
+GPS_LATITUDE_REF = 1
+GPS_LATITUDE = 2
+GPS_LONGITUDE_REF = 3
+GPS_LONGITUDE = 4
 
 
-def latlng_conversion(latlng, ref):
-    degrees = latlng[0][0] / latlng[0][1]
-    minutes = latlng[1][0] / latlng[1][1] / 60.0
-    seconds = latlng[2][0] / latlng[2][1] / 3600.0
-
-    if ref in ['S', 'W']:
+def latlng_conversion(dms, ref):
+    """Convert EXIF degree/minute/second rationals to signed decimal degrees."""
+    degrees = float(dms[0]) + float(dms[1]) / 60.0 + float(dms[2]) / 3600.0
+    if ref in ('S', 'W'):
         degrees = -degrees
-        minutes = -minutes
-        seconds = -seconds
-
-    return round(degrees + minutes + seconds, 5)
+    return round(degrees, 5)
 
 
-def get_coordinates(geotags):
-    lat = latlng_conversion(geotags['GPSLatitude'], geotags['GPSLatitudeRef'])
+def get_coordinates(gps_ifd):
+    lat = gps_ifd.get(GPS_LATITUDE)
+    lat_ref = gps_ifd.get(GPS_LATITUDE_REF)
+    lon = gps_ifd.get(GPS_LONGITUDE)
+    lon_ref = gps_ifd.get(GPS_LONGITUDE_REF)
 
-    lon = latlng_conversion(geotags['GPSLongitude'], geotags['GPSLongitudeRef'])
+    if not (lat and lat_ref and lon and lon_ref):
+        return ""
 
-    return (lat, lon)
-
-
-def get_geotagging(exif):
-    if not exif:
-        return None
-        # raise ValueError("No EXIF metadata found")
-
-    geotagging = {}
-    for (idx, tag) in TAGS.items():
-        if tag == 'GPSInfo':
-            if idx not in exif:
-                return None
-                # raise ValueError("No EXIF geotagging found")
-
-            for (key, val) in GPSTAGS.items():
-                if key in exif[idx]:
-                    geotagging[val] = exif[idx][key]
-    return geotagging
+    return (latlng_conversion(lat, lat_ref), latlng_conversion(lon, lon_ref))
 
 
 def get_exif_data(ifile):
-    if re.search(r'jpeg$|bmp$|png$|jpg$', str(ifile), re.IGNORECASE):
-        image = Image.open(ifile)
-        exifdata = image.getexif()
-        geotags = get_geotagging(exifdata)
-        try:
-            if "{1:" in str(exifdata[34853]):
-                lat_long = get_coordinates(geotags)
-                # geo_loc = get_location(str(lat_long)[1:-1])
-                geo_loc = lat_long
+    ifile = str(ifile)
+    if re.search(r'\.(jpe?g|bmp|png)$', ifile, re.IGNORECASE):
+        with Image.open(ifile) as image:
+            exifdata = image.getexif()
 
-            else:
-                geo_loc = ""  # No loc data
-        except KeyError as e:
+        # DateTimeOriginal lives in the Exif sub-IFD; fall back to the
+        # base-IFD DateTime tag if it's missing.
+        date = exifdata.get_ifd(EXIF_IFD).get(DATETIME_ORIGINAL) or exifdata.get(DATETIME)
+
+        try:
+            geo_loc = get_coordinates(exifdata.get_ifd(GPS_IFD))
+        except (TypeError, ValueError, ZeroDivisionError):
             geo_loc = ""
 
-        return exifdata.get(36867), geo_loc
-    elif re.search(r'heic$', str(ifile), re.IGNORECASE):
-        # this part of the decision tree processes HEIC files
-
-        heif_file = pyheif.read(str(ifile))
-        for metadata in heif_file.metadata:
-
+        return date, geo_loc
+    elif re.search(r'\.hei[cf]$', ifile, re.IGNORECASE):
+        heif_file = pyheif.read(ifile)
+        for metadata in heif_file.metadata or []:
             if metadata['type'] == 'Exif':
                 fstream = io.BytesIO(metadata['data'][6:])
+                tags = exifread.process_file(fstream, details=False)
+                date = tags.get('EXIF DateTimeOriginal')
+                return (str(date) if date else None), ""
 
-        tags = exifread.process_file(fstream, details=False)
+        return None, ""
+    elif re.search(r'\.(cr2|nef)$', ifile, re.IGNORECASE):
+        # Raw files (Canon and Nikon)
+        with open(ifile, 'rb') as f:
+            tags = exifread.process_file(f, details=False)
 
-        return str(tags.get('EXIF DateTimeOriginal')), ""
-    elif re.search(r'CR2$|NEF$', str(ifile), re.IGNORECASE):
-        # this part of the decision tree processes raw files (Cannon and Nikon)
-        f = open(ifile, 'rb')
-
-        # Return Exif tags
-        tags = exifread.process_file(f, details=False)
-        orig_date = tags['EXIF DateTimeOriginal']
-
-        return str(orig_date)[:10], ""
+        date = tags.get('EXIF DateTimeOriginal')
+        return (str(date) if date else None), ""
 
     else:
         raise ValueError("File type not supported (doesn't seem to be an image)!")

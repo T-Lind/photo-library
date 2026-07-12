@@ -112,6 +112,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchResults'
 
+  /stats:
+    get:
+      summary: Library-wide statistics
+      responses:
+        '200':
+          description: Image/people counts and covered date range
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_images:
+                    type: integer
+                  total_people:
+                    type: integer
+                  images_with_location:
+                    type: integer
+                  earliest_date:
+                    type: string
+                    format: date-time
+                    nullable: true
+                  latest_date:
+                    type: string
+                    format: date-time
+                    nullable: true
+
   /images/{image_id}:
     get:
       summary: Get original image
@@ -155,6 +181,76 @@ paths:
               schema:
                 type: string
                 format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /images/{image_id}/details:
+    get:
+      summary: Get full metadata for one image, with resolved people names
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Image metadata
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Image'
+                  - type: object
+                    properties:
+                      image_url:
+                        type: string
+                      similar_url:
+                        type: string
+                      filename:
+                        type: string
+                      people:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            people_id:
+                              type: integer
+                            name:
+                              type: string
+                            face_image_url:
+                              type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /images/{image_id}/similar:
+    get:
+      summary: Find visually similar images using the stored CLIP embedding
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 12
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Similar images, most similar first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Image'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -216,7 +312,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
     delete:
-      summary: Delete or hide a person
+      summary: Delete a person
+      description: Removes the person from all images and from the people table. With permanent=true, their cropped face image is also deleted from disk.
       parameters:
         - name: people_id
           in: path
