@@ -1,6 +1,7 @@
+__pycache__/
 *.json
 ex-images
 sm-images
 .venv
 .idea
-256-images
+256-imagesthumbnail_cache

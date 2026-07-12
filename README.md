@@ -61,8 +61,14 @@ pip install -r requirements.txt
 2. Run the processing pipeline:
 
 ```bash
-python main_load.py
+python main_load.py --images-dir 256-images --db-uri data/photos-256 --faces-dir cropped_faces_256
 ```
+
+By default this is **incremental**: rerunning it only indexes images that
+aren't in the database yet. New faces are matched against known people (by
+face-encoding distance to each person's stored centroid) and genuinely new
+faces become new people. Use `--rebuild` to drop the database and reprocess
+everything from scratch.
 
 3. Start the API server:
 
@@ -78,10 +84,23 @@ The system provides REST API endpoints for:
 - Semantic image search using natural language queries
 - Face-based photo search
 - Temporal search and filtering
-- Individual photo retrieval
-- Person management (naming, merging identities)
+- Individual photo retrieval (originals, cached thumbnails, full metadata)
+- Visually similar image lookup (`/images/{id}/similar`)
+- Library statistics (`/stats`)
+- Person management (naming, merging identities, deletion)
 
 See the OpenAPI specification for detailed endpoint documentation.
+
+### Server configuration
+
+The API server reads these environment variables (all optional):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PHOTO_DB_URI` | `data/photos-256` | LanceDB database location |
+| `PHOTO_FACES_DIR` | `cropped_faces_256` | Cropped face images directory |
+| `PHOTO_THUMBNAIL_CACHE_DIR` | `thumbnail_cache` | On-disk thumbnail cache |
+| `PHOTO_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed CORS origins |
 
 ## Database Schema
 
