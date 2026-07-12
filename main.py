@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
-from datetime import date, datetime
+from datetime import datetime
 from pydantic import BaseModel, Field
 import lancedb
 import pandas as pd
@@ -80,21 +80,6 @@ def get_db():
         raise HTTPException(status_code=500, detail="Database connection failed")
 
 
-def apply_filters(query: pd.DataFrame, start_date: Optional[date],
-                  end_date: Optional[date], people_ids: Optional[List[int]]) -> pd.DataFrame:
-    """Apply date and people filters to search results"""
-    if start_date:
-        query = query[query['date'] >= pd.Timestamp(start_date)]
-    if end_date:
-        query = query[query['date'] <= pd.Timestamp(end_date)]
-    if people_ids:
-        # Filter for images containing any of the specified people
-        query = query[query['people_ids'].apply(
-            lambda x: any(pid in x for pid in people_ids)
-        )]
-    return query
-
-
 @app.post("/api/v1/search", response_model=SearchResults)
 async def search_photos(search_request: SearchRequest):
     """
@@ -131,6 +116,10 @@ async def search_photos(search_request: SearchRequest):
         # Combine all conditions with AND
         where_clause = " AND ".join(where_conditions) if where_conditions else None
 
+        # Total matches: a vector search ranks every row that passes the
+        # filter, so the filtered row count is the total for both paths.
+        total_count = images_table.count_rows(where_clause)
+
         # Calculate pagination
         offset = (search_request.page - 1) * search_request.per_page
 
@@ -139,41 +128,25 @@ async def search_photos(search_request: SearchRequest):
             # Get embedding for semantic search
             query_emb = get_text_embedding(search_request.query)
 
-            # Build and execute search with prefiltering
-            if where_clause:
-                results = (
-                    images_table.search(query_emb)
-                    .where(where_clause, prefilter=True)
-                )
-            else:
-                results = images_table.search(query_emb)
-
-            # Get total count first
-            total_count = len(results.to_arrow())
-
-            # Then get paginated results
-            results_df = (
-                results
-                .limit(search_request.per_page)
-                .offset(offset)
-                .to_pandas()
+            search = (
+                images_table.search(query_emb)
+                .nprobes(NUM_PROBES)
+                .refine_factor(REFINE_FACTOR)
             )
+            if where_clause:
+                search = search.where(where_clause, prefilter=True)
         else:
             # No semantic search, just filtering and pagination
-            query = images_table
+            search = images_table.search()
             if where_clause:
-                query = query.search().where(where_clause)
+                search = search.where(where_clause)
 
-            # Get total count
-            total_count = len(query.to_arrow())
-
-            # Get paginated results
-            results_df = (
-                query
-                .limit(search_request.per_page)
-                .offset(offset)
-                .to_pandas()
-            )
+        results_df = (
+            search
+            .limit(search_request.per_page)
+            .offset(offset)
+            .to_pandas()
+        )
 
         # Format results according to API schema
         results = []
@@ -271,18 +244,21 @@ async def update_person(people_id: int, request: UpdatePersonRequest = Body(...)
     """
     try:
         db = get_db()
-        images_table = db.open_table("images")
-
-        images_df = images_table.to_pandas()
-
         people_table = db.open_table("people")
 
+        people_df = people_table.to_pandas()
+        if people_df[people_df["people_id"] == people_id].empty:
+            raise HTTPException(status_code=404, detail="Person not found")
 
         people_table.update(where=f"people_id = {people_id}", values={"name": request.name})
+
+        images_df = db.open_table("images").to_pandas()
+        photo_count = int(images_df["people_ids"].apply(lambda x: people_id in x).sum())
+
         return Person(
             people_id=people_id,
             name=request.name,
-            photo_count=-1,
+            photo_count=photo_count,
             face_image_url=f"/api/v1/people/{people_id}/face"
         )
 
@@ -336,7 +312,6 @@ async def list_people():
 
         # Sort by photo count descending, then by name
         people_list.sort(key=lambda x: (-x.photo_count, x.name))
-        print("People list", people_list)
         return people_list
 
     except Exception as e:
@@ -359,6 +334,8 @@ def get_image_path(image_id: int, db) -> str:
             raise HTTPException(status_code=404, detail="Image not found")
 
         return result.iloc[0]["image_path"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get image path: {e}")
         raise HTTPException(status_code=500, detail="Database error")

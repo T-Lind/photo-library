@@ -49,7 +49,7 @@ def load_face_data(save_dir, folder_name):
 def convert_heic_to_jpg(heic_path):
     """Convert HEIC/HEIF to JPEG using pillow-heif"""
     with Image.open(heic_path) as image:
-        jpeg_path = heic_path.replace('.heic', '.jpg').replace('.HEIC', '.jpg')
+        jpeg_path = os.path.splitext(heic_path)[0] + '.jpg'
         image.save(jpeg_path, "JPEG")
         return jpeg_path
 

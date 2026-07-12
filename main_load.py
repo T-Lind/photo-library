@@ -1,7 +1,6 @@
 import lancedb
 import pyarrow as pa
 from tqdm import tqdm
-from transformers import CLIPProcessor, CLIPModel
 from datetime import datetime
 from get_emb import get_image_embedding
 from get_exif import get_exif_data
@@ -11,10 +10,6 @@ import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Load the CLIP model
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 # LITERALS
 DIMS = 512

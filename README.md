@@ -20,10 +20,17 @@ connectivity is required. Your personal photos stay private.
 
 ## System Components
 
-- `main.py`: Core orchestration script for processing images and managing the database
+- `main.py`: FastAPI application exposing the search and photo-management REST API
+- `main_load.py`: Core orchestration script for processing images and populating the database
+- `run.py`: Development server entry point (uvicorn, auto-reload)
+- `production.py`: Production server entry point (gunicorn with uvicorn workers)
 - `get_emb.py`: CLIP model integration for semantic embeddings
 - `get_exif.py`: EXIF data extraction utilities
 - `proc_imgs.py`: Face detection and processing pipeline
+
+A companion web UI lives in a separate repository:
+[T-Lind/photo-library-frontend](https://github.com/T-Lind/photo-library-frontend) (expected at
+`http://localhost:3000`, which is the origin allowed by the API's CORS configuration).
 
 ## Requirements
 
@@ -55,6 +62,13 @@ pip install -r requirements.txt
 
 ```bash
 python main_load.py
+```
+
+3. Start the API server:
+
+```bash
+python run.py         # development (auto-reload, http://localhost:5000)
+python production.py  # production (gunicorn, http://0.0.0.0:8000)
 ```
 
 ## API Endpoints

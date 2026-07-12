@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from main import app
 
 # Configuration
-HOST = "localhost"  # This allows external access. Use "127.0.0.1" for local only
+HOST = "localhost"  # Local only. Use "0.0.0.0" to allow external access
 PORT = 5000
 DB_URI = "data/photos-256"  # LanceDB database location
 FACE_IMAGES_DIR = "cropped_faces_256"  # Directory for face images
