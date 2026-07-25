@@ -1,7 +1,20 @@
 __pycache__/
-*.json
-ex-images
-sm-images
-.venv
-.idea
-256-imagesthumbnail_cache
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+.pytest_cache/
+*.egg-info/
+
+# Local data: the library, caches, and job state never belong in git.
+data/
+saves/
+thumbnail_cache/
+cropped_faces*/
+.env
+
+# Sample image folders
+ex-images/
+sm-images/
+256-images/

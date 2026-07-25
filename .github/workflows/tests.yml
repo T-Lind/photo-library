@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # The suite runs on the stub embedding and face backends, so CI needs
+      # neither torch nor any model weights.
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        run: pytest -q
+
+      - name: Check the committed OpenAPI schema is current
+        run: |
+          pip install pyyaml
+          python -m photolib.cli openapi > /tmp/openapi.yaml
+          diff -u openapi.yaml /tmp/openapi.yaml
+        env:
+          PHOTO_EMBED_BACKEND: stub
+          PHOTO_FACE_BACKEND: stub

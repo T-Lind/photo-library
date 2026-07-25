@@ -1,119 +1,231 @@
-# Photo Management System
+# photolib
 
-A sophisticated photo management system that enables semantic search, facial recognition, and temporal organization of
-your photo collection. The system processes images to extract embeddings using CLIP, detects and clusters faces using
-face_recognition, and stores everything in a LanceDB database for efficient retrieval.
+A local, private photo library. Search your photos by describing them
+("kids on the beach at sunset"), search by face, and browse by date, person,
+or place — with everything running on your own machine. No API keys, no
+uploads, no network calls at any point after the models are downloaded once.
 
-With this system, you can store and search through your family photos locally! There are NO API calls and NO internet
-connectivity is required. Your personal photos stay private.
+Built for real family libraries: 100k–200k photos and beyond.
 
-## Redacted Example
 ![Photo Example](https://github.com/T-Lind/photo-library/blob/master/photos-example.png)
 
-## Features
+The web UI lives in a companion repository:
+[T-Lind/photo-library-frontend](https://github.com/T-Lind/photo-library-frontend).
 
-- **Semantic Image Search**: Using CLIP embeddings for natural language photo search
-- **Face Detection & Recognition**: Automatic face detection and clustering of people across photos
-- **EXIF Data Processing**: Extraction of timestamp and location data from images
-- **Multi-format Support**: Handles various image formats including JPEG, PNG, HEIC, and RAW files
-- **Vector Search**: Efficient text-to-image similarity search using LanceDB and the open-source OpenAI CLIP model
+---
 
-## System Components
+## What it does
 
-- `main.py`: FastAPI application exposing the search and photo-management REST API
-- `main_load.py`: Core orchestration script for processing images and populating the database
-- `run.py`: Development server entry point (uvicorn, auto-reload)
-- `production.py`: Production server entry point (gunicorn with uvicorn workers)
-- `get_emb.py`: CLIP model integration for semantic embeddings
-- `get_exif.py`: EXIF data extraction utilities
-- `proc_imgs.py`: Face detection and processing pipeline
+- **Natural-language search** — SigLIP 2 image/text embeddings, so you can
+  describe a photo instead of remembering when you took it.
+- **Face search and recognition** — every detected face is indexed
+  individually. Find someone by clicking their face, by picking a person, or
+  by uploading a photo of them ("who is this?").
+- **People management** — name people, merge identities that got split,
+  split ones that got merged, and confirm suggestions face by face.
+- **Reverse image search** — upload a photo, find it (and things like it) in
+  your library.
+- **Duplicate detection** — exact copies via content hash, re-encodes and
+  burst shots via perceptual hash.
+- **Date, place, folder, and person filters** with a month-by-month timeline.
+- **Incremental indexing** — point it at a folder as often as you like; only
+  new and changed files cost anything.
 
-A companion web UI lives in a separate repository:
-[T-Lind/photo-library-frontend](https://github.com/T-Lind/photo-library-frontend) (expected at
-`http://localhost:3000`, which is the origin allowed by the API's CORS configuration).
-
-## Requirements
-
-- Python 3.8+
-- PyTorch
-- transformers
-- face_recognition
-- LanceDB
-- PIL/Pillow
-- pyheif
-- scikit-learn
-- numpy
-  (for a full list, install the requirements.txt)
-
-## Installation
-
-If you're starting from scratch, take a look at `setup.sh` which provides all of the commands needed to get it up and
-running, starting from an Ubuntu 24.04 environment. Please note versions prior to 23.04 will NOT WORK! It also does not
-work on Windows, sadly :/ (but you CAN use WSL).
+## Quick start
 
 ```bash
-pip install -r requirements.txt
+./setup.sh                                   # venv + dependencies
+source .venv/bin/activate
+
+python -m photolib.cli index ~/Pictures      # index (recursive, incremental)
+python run.py                                # API on http://127.0.0.1:8000
 ```
 
-## Usage
+Then open <http://127.0.0.1:8000/docs> for the API, or run the frontend.
 
-1. Place your images in a directory
-2. Run the processing pipeline:
+Searching from the terminal works too:
 
 ```bash
-python main_load.py --images-dir 256-images --db-uri data/photos-256 --faces-dir cropped_faces_256
+python -m photolib.cli search "birthday cake with candles"
+python -m photolib.cli stats
+python -m photolib.cli duplicates
 ```
 
-By default this is **incremental**: rerunning it only indexes images that
-aren't in the database yet. New faces are matched against known people (by
-face-encoding distance to each person's stored centroid) and genuinely new
-faces become new people. Use `--rebuild` to drop the database and reprocess
-everything from scratch.
+## Models
 
-3. Start the API server:
+| Role | Default | Why |
+|---|---|---|
+| Image / text | `google/siglip2-base-patch16-224` | Better zero-shot retrieval than OpenAI CLIP at the same size, Apache-2.0, runs offline |
+| Faces | InsightFace `buffalo_l` (RetinaFace + ArcFace `w600k_r50`) | Far more accurate than dlib on profiles, poor light, and children; batched ONNX inference with optional GPU |
+
+Both are swappable through configuration. Larger embedding models are a
+one-line change if you have a GPU:
 
 ```bash
-python run.py         # development (auto-reload, http://localhost:5000)
-python production.py  # production (gunicorn, http://0.0.0.0:8000)
+# best quality, ~1.1 GB, 1152-dim
+PHOTO_EMBED_MODEL=google/siglip2-so400m-patch14-384 python -m photolib.cli index ~/Pictures --rebuild
+
+# OpenCLIP / LAION / MetaCLIP checkpoints
+PHOTO_EMBED_BACKEND=open_clip PHOTO_EMBED_MODEL=ViT-H-14-quickgelu:dfn5b ...
 ```
 
-## API Endpoints
+Changing the embedding model invalidates the stored vectors, so it requires
+`--rebuild`. The library refuses to index with a mismatched model rather than
+silently mixing incompatible vectors.
 
-The system provides REST API endpoints for:
+## Configuration
 
-- Semantic image search using natural language queries
-- Face-based photo search
-- Temporal search and filtering
-- Individual photo retrieval (originals, cached thumbnails, full metadata)
-- Visually similar image lookup (`/images/{id}/similar`)
-- Library statistics (`/stats`)
-- Person management (naming, merging identities, deletion)
-
-See the OpenAPI specification for detailed endpoint documentation.
-
-### Server configuration
-
-The API server reads these environment variables (all optional):
+Every setting is an environment variable (or a line in `.env`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PHOTO_DB_URI` | `data/photos-256` | LanceDB database location |
-| `PHOTO_FACES_DIR` | `cropped_faces_256` | Cropped face images directory |
-| `PHOTO_THUMBNAIL_CACHE_DIR` | `thumbnail_cache` | On-disk thumbnail cache |
-| `PHOTO_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed CORS origins |
+| `PHOTO_DB_URI` | `data/library` | LanceDB location |
+| `PHOTO_THUMBNAIL_CACHE_DIR` | `data/thumbnails` | Thumbnail + face-crop cache |
+| `PHOTO_STATE_DIR` | `data/state` | Background job records |
+| `PHOTO_EMBED_BACKEND` | `siglip` | `siglip`, `clip`, `open_clip`, `stub` |
+| `PHOTO_EMBED_MODEL` | `google/siglip2-base-patch16-224` | Model id |
+| `PHOTO_FACE_BACKEND` | `insightface` | `insightface`, `dlib`, `none` |
+| `PHOTO_DEVICE` | `auto` | `auto`, `cuda`, `mps`, `cpu` |
+| `PHOTO_EMBED_BATCH_SIZE` | `16` | Raise on a GPU |
+| `PHOTO_FACE_MATCH_THRESHOLD` | `0.38` | Cosine similarity to join an existing person |
+| `PHOTO_FACE_STRONG_MATCH_THRESHOLD` | `0.55` | Similarity that needs no corroboration |
+| `PHOTO_FACE_CLUSTER_THRESHOLD` | `0.42` | Threshold for a full recluster |
+| `PHOTO_MAX_CANDIDATES` | `1000` | Ranked candidates kept per semantic search |
+| `PHOTO_NPROBES` / `PHOTO_REFINE_FACTOR` | `24` / `8` | ANN accuracy vs speed |
+| `PHOTO_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated |
+| `PHOTO_HOST` / `PHOTO_PORT` | `127.0.0.1` / `8000` | Bind address |
 
-## Database Schema
+If faces are being split across too many people, lower
+`PHOTO_FACE_MATCH_THRESHOLD` and run `photolib recluster`. If different
+people are being merged, raise it.
 
-### People Table
+## API
 
-- `people_id`: Unique identifier for each person
-- `name`: Person's name (can be updated via API)
+Everything is under `/api/v1`. Full schema at `/docs`.
 
-### Images Table
+**Search**
+- `POST /search` — semantic + person + date + location + folder, paginated
+- `GET  /search?q=...` — the same, as a bookmarkable URL
+- `POST /search/by-image` — reverse image search from an upload
+- `GET  /timeline`, `GET /folders`
 
-- `image_id`: Unique identifier for each image
-- `vector`: CLIP embedding vector (512 dimensions)
-- `image_path`: Path to the original image
-- `people_ids`: List of people present in the image
-- `date`: Timestamp from EXIF data
-- `location`: Geographic location (if available in EXIF)
+**Images**
+- `GET /images/{id}` — the original file
+- `GET /images/{id}/thumbnail?size=grid&format=webp` — cached, ETagged
+- `GET /images/{id}/details` — metadata, people, and face boxes
+- `GET /images/{id}/similar` — visually similar photos
+- `GET /images/{id}/faces`
+
+**People**
+- `GET/PATCH/DELETE /people/{id}`, `GET /people`
+- `POST /people/merge`, `POST /people/{id}/hidden`
+- `GET /people/{id}/suggestions` — unassigned faces that look like them
+
+**Faces**
+- `POST /faces/search` — by `face_id` or `person_id`
+- `POST /faces/search/by-upload` — "who is this?"
+- `POST /faces/assign` / `POST /faces/detach` — corrections
+- `GET /faces/unassigned` — the review queue
+- `GET /faces/{id}/crop`
+
+**Admin**
+- `POST /admin/index` — background indexing, returns a job id
+- `POST /admin/recluster`, `POST /admin/compact`
+- `GET  /admin/jobs`, `GET /admin/jobs/{id}`, `DELETE /admin/jobs/{id}`
+- `GET  /admin/duplicates`, `GET /stats`, `GET /health`
+
+## How it scales
+
+The design targets a library that does not fit in a naive query pattern.
+
+**Browse index.** A columnar NumPy snapshot of image id, capture date,
+people, coordinates, and face count lives in memory — about 6 MB for 200k
+photos. Filtering, sorting, and pagination happen there, and only the ~60
+rows actually on screen are read from the database. Jumping to page 3000
+costs the same as page 1.
+
+**Search.** Vectors are stored L2-normalised and indexed with cosine
+distance, which is what SigLIP and ArcFace are trained for. IVF_PQ parameters
+are sized from the row count (~√n partitions); below a few thousand rows the
+index is skipped because a brute-force scan is genuinely faster.
+
+**Faces.** Each face is a row with its own embedding, bounding box, and
+quality score, so "every photo with this face" is one ANN query. Identity
+assignment is incremental and does bounded work per face — see
+[Face recognition](#face-recognition) below.
+
+**Indexing.** Each photo is decoded exactly once and the same buffer feeds
+the embedder, the face detector, the perceptual hash, and the thumbnail
+writer. Metadata and IO run on a thread pool while model batches run on the
+accelerator. Work is committed in batches, so an interrupted run resumes.
+
+**Thumbnails.** WebP, generated on demand and cached in sharded directories
+(no single directory ever holds 200k files), served with strong ETags so a
+scrolling grid revalidates instead of re-downloading.
+
+## Face recognition
+
+The face system is the part that most affects how the library feels, so it is
+worth describing what it actually does.
+
+Every detected face gets an ArcFace embedding, a bounding box, and a
+**quality score** combining detector confidence, face size, and sharpness.
+Identity assignment then works like this:
+
+1. Score the face against every person's **centroid** (a quality-weighted
+   mean, so a blurry background face cannot drag a person's model around).
+2. Refine the top few candidates against that person's best **exemplar
+   faces**. People change with age, lighting, glasses, and facial hair; a
+   single mean vector cannot represent that, and nearest-exemplar matching
+   can.
+3. Assign if the best match is confident, or if it clears the threshold with
+   a clear lead over the runner-up.
+4. If two candidates are nearly tied, still show the photo under the best
+   one — but do not let that face update either person's model. Guessing and
+   then learning from the guess is how clusters degenerate into one blob.
+5. Faces too small or blurry to identify never create a new person, which is
+   what stops a library from sprouting thousands of one-photo strangers.
+6. Two faces in the same photograph are never assigned to the same person.
+
+Corrections you make are marked **confirmed** and are treated as ground truth
+by any later reclustering, so fixing a mistake makes it stay fixed.
+
+`photolib recluster` rebuilds every identity from scratch using a
+**mutual-kNN graph** — two faces are linked only when each is in the other's
+top-k neighbours *and* they clear the similarity threshold. Requiring
+mutuality is what prevents the chaining failure where a handful of ambiguous
+faces merge two people into one cluster.
+
+## Development
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite runs against a real LanceDB database with synthetic photos and
+stub models, so it needs no model downloads and finishes in a few seconds.
+It covers indexing, incremental updates, clustering behaviour, search
+ranking, filtering, pagination, the HTTP layer, and scaling of the browse
+index at 200k photos.
+
+## Requirements
+
+- Python 3.10+
+- ~2 GB of disk for model weights on first run
+- A GPU is optional. On CPU, expect roughly 3–10 photos/second for the
+  initial index; incremental runs only touch new files.
+
+## Migrating from v1
+
+The schema changed (per-face rows, numeric coordinates, normalised vectors),
+and the old face-cluster JSON sidecar is gone. Re-index once:
+
+```bash
+python -m photolib.cli index ~/Pictures --rebuild
+```
+
+## Licence
+
+MIT.

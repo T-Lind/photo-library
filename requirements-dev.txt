@@ -1,0 +1,5 @@
+# Enough to run the test suite. The suite uses the stub embedding and face
+# backends, so it needs no torch, no onnxruntime, and no model downloads.
+-r requirements-min.txt
+pytest>=8.0
+httpx>=0.27

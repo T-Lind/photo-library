@@ -1,386 +1,1437 @@
-openapi: 3.0.0
+# Generated from the FastAPI application — do not edit by hand.
+# Regenerate with:  python -m photolib.cli openapi > openapi.yaml
+openapi: 3.1.0
 info:
-  title: Photo Management System API
-  description: API for semantic photo search and management with face recognition capabilities
-  version: 1.0.0
-
-servers:
-  - url: /api/v1
-
-components:
-  schemas:
-    Error:
-      type: object
-      properties:
-        code:
-          type: integer
-        message:
-          type: string
-
-    Person:
-      type: object
-      properties:
-        people_id:
-          type: integer
-        name:
-          type: string
-        photo_count:
-          type: integer
-        face_image_url:
-          type: string
-          description: URL to the cropped face image of this person
-
-    Image:
-      type: object
-      properties:
-        image_id:
-          type: integer
-        date:
-          type: string
-          format: date-time
-        location:
-          type: string
-        people_ids:
-          type: array
-          items:
-            type: integer
-        thumbnail_url:
-          type: string
-
-    SearchResults:
-      type: object
-      properties:
-        total:
-          type: integer
-        page:
-          type: integer
-        per_page:
-          type: integer
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/Image'
-
-  responses:
-    NotFound:
-      description: The specified resource was not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-
+  title: photolib
+  description: "\nA local, private photo library. Natural-language search over your photos,\nface search\
+    \ and recognition, and date/location browsing \u2014 all running on your\nown machine with no network\
+    \ calls.\n"
+  version: 2.0.0
 paths:
-  /search:
+  /api/v1/search:
     post:
-      summary: Search photos using multiple criteria
-      description: Returns photos matching the combination of semantic query, date range, and people filters
+      tags:
+      - search
+      summary: Search
+      description: 'Combined semantic + person + date + location search.
+
+
+        With no query this is a plain browse, which is why an empty search is
+
+        cheap: it never touches the embedding model or the ANN index.'
+      operationId: search_api_v1_search_post
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                query:
-                  type: string
-                  description: Optional semantic search query
-                  example: "sunset at the beach"
-                start_date:
-                  type: string
-                  format: date
-                  description: Optional start date for filtering
-                end_date:
-                  type: string
-                  format: date
-                  description: Optional end date for filtering
-                people_ids:
-                  type: array
-                  description: Optional list of people IDs to filter by
-                  items:
-                    type: integer
-                page:
-                  type: integer
-                  default: 1
-                per_page:
-                  type: integer
-                  default: 20
+              $ref: '#/components/schemas/SearchRequest'
       responses:
         '200':
-          description: Search results matching all specified criteria
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResults'
-
-  /stats:
-    get:
-      summary: Library-wide statistics
-      responses:
-        '200':
-          description: Image/people counts and covered date range
+                $ref: '#/components/schemas/SearchResponse'
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  total_images:
-                    type: integer
-                  total_people:
-                    type: integer
-                  images_with_location:
-                    type: integer
-                  earliest_date:
-                    type: string
-                    format: date-time
-                    nullable: true
-                  latest_date:
-                    type: string
-                    format: date-time
-                    nullable: true
-
-  /images/{image_id}:
+                $ref: '#/components/schemas/HTTPValidationError'
     get:
-      summary: Get original image
+      tags:
+      - search
+      summary: Search Get
+      description: GET form of /search, so a search is a shareable, bookmarkable URL.
+      operationId: search_get_api_v1_search_get
       parameters:
-        - name: image_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: The image file
-          content:
-            image/*:
-              schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /images/{image_id}/thumbnail:
-    get:
-      summary: Get image thumbnail
-      parameters:
-        - name: image_id
-          in: path
-          required: true
-          schema:
-            type: integer
-        - name: size
-          in: query
-          schema:
-            type: string
-            enum: [ small, medium, large ]
-            default: medium
-      responses:
-        '200':
-          description: The thumbnail image
-          content:
-            image/jpeg:
-              schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /images/{image_id}/details:
-    get:
-      summary: Get full metadata for one image, with resolved people names
-      parameters:
-        - name: image_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: Image metadata
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/Image'
-                  - type: object
-                    properties:
-                      image_url:
-                        type: string
-                      similar_url:
-                        type: string
-                      filename:
-                        type: string
-                      people:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            people_id:
-                              type: integer
-                            name:
-                              type: string
-                            face_image_url:
-                              type: string
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /images/{image_id}/similar:
-    get:
-      summary: Find visually similar images using the stored CLIP embedding
-      parameters:
-        - name: image_id
-          in: path
-          required: true
-          schema:
-            type: integer
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 12
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Natural-language query
+          title: Q
+        description: Natural-language query
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1000
             minimum: 1
-            maximum: 100
+          - type: 'null'
+          title: Per Page
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          default: relevance
+          title: Sort
+      - name: people
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Comma-separated person ids
+          title: People
+        description: Comma-separated person ids
       responses:
         '200':
-          description: Similar images, most similar first
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  results:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Image'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /people:
-    get:
-      summary: List all people detected in photos
+                $ref: '#/components/schemas/SearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/search/by-image:
+    post:
+      tags:
+      - search
+      summary: Search By Image
+      description: 'Reverse image search: find photos that look like the uploaded one.'
+      operationId: search_by_image_api_v1_search_by_image_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_search_by_image_api_v1_search_by_image_post'
+        required: true
       responses:
         '200':
-          description: List of people
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/timeline:
+    get:
+      tags:
+      - search
+      summary: Timeline
+      description: "Photos per month \u2014 drives the timeline scrubber."
+      operationId: timeline_api_v1_timeline_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/folders:
+    get:
+      tags:
+      - search
+      summary: Folders
+      operationId: folders_api_v1_folders_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/images/{image_id}:
+    get:
+      tags:
+      - images
+      summary: Get Original
+      description: The original file, straight off disk.
+      operationId: get_original_api_v1_images__image_id__get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      - name: download
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Download
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/thumbnail:
+    get:
+      tags:
+      - images
+      summary: Get Thumbnail
+      description: A cached thumbnail, generated on first request.
+      operationId: get_thumbnail_api_v1_images__image_id__thumbnail_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - small
+          - medium
+          - grid
+          - large
+          - preview
+          default: grid
+          title: Size
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - webp
+          - jpeg
+          default: webp
+          title: Format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/details:
+    get:
+      tags:
+      - images
+      summary: Get Details
+      description: Full metadata, the people in the photo, and every detected face box.
+      operationId: get_details_api_v1_images__image_id__details_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/similar:
+    get:
+      tags:
+      - images
+      summary: Get Similar
+      description: Visually similar photos, using the stored image embedding.
+      operationId: get_similar_api_v1_images__image_id__similar_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 24
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/faces:
+    get:
+      tags:
+      - images
+      summary: Get Faces
+      operationId: get_faces_api_v1_images__image_id__faces_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people:
+    get:
+      tags:
+      - people
+      summary: List People
+      description: 'Everyone the library knows about, most-photographed first.
+
+
+        ``min_photos`` is the useful knob on a real library: auto-clustering will
+
+        always produce a long tail of strangers who appear in exactly one photo,
+
+        and hiding them makes the page usable.'
+      operationId: list_people_api_v1_people_get
+      parameters:
+      - name: include_hidden
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Hidden
+      - name: named_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Named Only
+      - name: min_photos
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 1
+          title: Min Photos
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Person'
-
-  /people/{people_id}:
-    get:
-      summary: Get person details
-      parameters:
-        - name: people_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: Person details including their face image
+                  $ref: '#/components/schemas/PersonOut'
+                title: Response List People Api V1 People Get
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Person'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/{person_id}:
+    get:
+      tags:
+      - people
+      summary: Get Person
+      operationId: get_person_api_v1_people__person_id__get
+      parameters:
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     patch:
-      summary: Update person details (e.g., name)
+      tags:
+      - people
+      summary: Rename Person
+      operationId: rename_person_api_v1_people__person_id__patch
       parameters:
-        - name: people_id
-          in: path
-          required: true
-          schema:
-            type: integer
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
+              $ref: '#/components/schemas/RenamePersonRequest'
       responses:
         '200':
-          description: Updated person details
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Person'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: '#/components/schemas/PersonOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     delete:
-      summary: Delete a person
-      description: Removes the person from all images and from the people table. With permanent=true, their cropped face image is also deleted from disk.
+      tags:
+      - people
+      summary: Delete Person
+      description: Forget an identity. The faces stay, returned to the unassigned pool.
+      operationId: delete_person_api_v1_people__person_id__delete
       parameters:
-        - name: people_id
-          in: path
-          required: true
-          schema:
-            type: integer
-        - name: permanent
-          in: query
-          required: false
-          schema:
-            type: boolean
-            default: false
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
       responses:
         '200':
-          description: Person successfully deleted/hidden
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  affected_images:
-                    type: integer
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /people/{people_id}/face:
-    get:
-      summary: Get person's face image
-      parameters:
-        - name: people_id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        '200':
-          description: The cropped face image for this person
-          content:
-            image/jpeg:
-              schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /people/merge:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/{person_id}/hidden:
     post:
-      summary: Merge two person entries (for when same person is detected as different)
+      tags:
+      - people
+      summary: Set Hidden
+      description: "Hide a person without deleting them \u2014 for strangers and false clusters."
+      operationId: set_hidden_api_v1_people__person_id__hidden_post
+      parameters:
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                source_id:
-                  type: integer
-                target_id:
-                  type: integer
+              $ref: '#/components/schemas/HidePersonRequest'
       responses:
         '200':
-          description: Successfully merged people
+          description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Person'
+                $ref: '#/components/schemas/PersonOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/merge:
+    post:
+      tags:
+      - people
+      summary: Merge People
+      description: Fold one identity into another when clustering split the same person.
+      operationId: merge_people_api_v1_people_merge_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MergePeopleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/{person_id}/suggestions:
+    get:
+      tags:
+      - people
+      summary: Suggestions
+      description: Unassigned faces that look like this person, for one-click confirmation.
+      operationId: suggestions_api_v1_people__person_id__suggestions_get
+      parameters:
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 300
+          minimum: 1
+          default: 60
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/unassigned:
+    get:
+      tags:
+      - faces
+      summary: Unassigned
+      description: "Faces with no identity yet, best-quality first \u2014 the review queue."
+      operationId: unassigned_api_v1_faces_unassigned_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 120
+          title: Limit
+      - name: min_quality
+        in: query
+        required: false
+        schema:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          default: 0.3
+          title: Min Quality
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/search:
+    post:
+      tags:
+      - faces
+      summary: Search Faces
+      description: 'Find faces that look like a given face or person.
+
+
+        This is the "search by face" path: it queries the face vector index
+
+        directly, so it finds people the clusterer never linked, including in
+
+        photos where they were never tagged.'
+      operationId: search_faces_api_v1_faces_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FaceSearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/search/by-upload:
+    post:
+      tags:
+      - faces
+      summary: Search Faces By Upload
+      description: "\"Who is this?\" \u2014 upload a photo and match its largest face."
+      operationId: search_faces_by_upload_api_v1_faces_search_by_upload_post
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 300
+          minimum: 1
+          default: 60
+          title: Limit
+      - name: min_similarity
+        in: query
+        required: false
+        schema:
+          type: number
+          maximum: 1.0
+          minimum: -1.0
+          default: 0.3
+          title: Min Similarity
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_search_faces_by_upload_api_v1_faces_search_by_upload_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/assign:
+    post:
+      tags:
+      - faces
+      summary: Assign Faces
+      description: 'Attach faces to a person, or create a new person from them.
+
+
+        Assignments made here are marked confirmed, so a later recluster treats
+
+        them as ground truth rather than undoing the correction.'
+      operationId: assign_faces_api_v1_faces_assign_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignFacesRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/detach:
+    post:
+      tags:
+      - faces
+      summary: Detach Faces
+      description: "\"That isn't them\" \u2014 return faces to the unassigned pool."
+      operationId: detach_faces_api_v1_faces_detach_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetachFacesRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/{face_id}:
+    get:
+      tags:
+      - faces
+      summary: Get Face
+      operationId: get_face_api_v1_faces__face_id__get
+      parameters:
+      - name: face_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Face Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/faces/{face_id}/crop:
+    get:
+      tags:
+      - faces
+      summary: Get Face Crop
+      description: The cropped face, cut from the original photo and cached on first view.
+      operationId: get_face_crop_api_v1_faces__face_id__crop_get
+      parameters:
+      - name: face_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Face Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/stats:
+    get:
+      tags:
+      - admin
+      summary: Stats
+      description: Library-wide counts, date coverage, and which models built the index.
+      operationId: stats_api_v1_stats_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/health:
+    get:
+      tags:
+      - admin
+      summary: Health
+      description: "Liveness plus whether a library has been indexed yet.\n\nDeliberately does not touch\
+        \ the models \u2014 a health check must not pay for\nloading a couple of gigabytes of weights."
+      operationId: health_api_v1_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/index:
+    post:
+      tags:
+      - admin
+      summary: Start Index
+      description: 'Index (or re-index) a folder in the background.
+
+
+        Returns immediately with a job id; poll ``/admin/jobs/{id}`` for progress.
+
+        Indexing is incremental, so pointing this at the same folder after adding
+
+        photos only costs model time for the new files.'
+      operationId: start_index_api_v1_admin_index_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IndexRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/recluster:
+    post:
+      tags:
+      - admin
+      summary: Start Recluster
+      description: 'Rebuild every person from scratch from the stored face embeddings.
+
+
+        Useful after tuning thresholds. Manually confirmed faces are preserved.'
+      operationId: start_recluster_api_v1_admin_recluster_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReclusterRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/compact:
+    post:
+      tags:
+      - admin
+      summary: Start Compact
+      description: Merge fragments and rebuild indexes. Worth running after a big import.
+      operationId: start_compact_api_v1_admin_compact_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
+  /api/v1/admin/jobs:
+    get:
+      tags:
+      - admin
+      summary: List Jobs
+      operationId: list_jobs_api_v1_admin_jobs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/JobOut'
+                type: array
+                title: Response List Jobs Api V1 Admin Jobs Get
+  /api/v1/admin/jobs/{job_id}:
+    get:
+      tags:
+      - admin
+      summary: Get Job
+      operationId: get_job_api_v1_admin_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - admin
+      summary: Cancel Job
+      operationId: cancel_job_api_v1_admin_jobs__job_id__delete
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/duplicates:
+    get:
+      tags:
+      - admin
+      summary: Duplicates
+      description: Groups of identical or near-identical photos, for reclaiming space.
+      operationId: duplicates_api_v1_admin_duplicates_get
+      parameters:
+      - name: max_distance
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 20
+          minimum: 0
+          default: 6
+          title: Max Distance
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /:
+    get:
+      summary: Root
+      operationId: root__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+components:
+  schemas:
+    AssignFacesRequest:
+      properties:
+        face_ids:
+          items:
+            type: integer
+          type: array
+          minItems: 1
+          title: Face Ids
+        person_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Person Id
+          description: Omit to create a new person from these faces
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+          description: Name for a newly created person
+      type: object
+      required:
+      - face_ids
+      title: AssignFacesRequest
+    Body_search_by_image_api_v1_search_by_image_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+        page:
+          type: integer
+          title: Page
+          default: 1
+        per_page:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Per Page
+      type: object
+      required:
+      - file
+      title: Body_search_by_image_api_v1_search_by_image_post
+    Body_search_faces_by_upload_api_v1_faces_search_by_upload_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - file
+      title: Body_search_faces_by_upload_api_v1_faces_search_by_upload_post
+    DetachFacesRequest:
+      properties:
+        face_ids:
+          items:
+            type: integer
+          type: array
+          minItems: 1
+          title: Face Ids
+      type: object
+      required:
+      - face_ids
+      title: DetachFacesRequest
+    FaceSearchRequest:
+      properties:
+        face_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Face Id
+        person_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Person Id
+        limit:
+          type: integer
+          maximum: 500.0
+          minimum: 1.0
+          title: Limit
+          default: 60
+        min_similarity:
+          type: number
+          maximum: 1.0
+          minimum: -1.0
+          title: Min Similarity
+          default: 0.3
+      type: object
+      title: FaceSearchRequest
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HidePersonRequest:
+      properties:
+        hidden:
+          type: boolean
+          title: Hidden
+          default: true
+      type: object
+      title: HidePersonRequest
+    ImageSummary:
+      properties:
+        image_id:
+          type: integer
+          title: Image Id
+        filename:
+          type: string
+          title: Filename
+          default: ''
+        taken_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Taken At
+        lat:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lat
+        lon:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Lon
+        place:
+          type: string
+          title: Place
+          default: ''
+        people_ids:
+          items:
+            type: integer
+          type: array
+          title: People Ids
+        face_count:
+          type: integer
+          title: Face Count
+          default: 0
+        width:
+          type: integer
+          title: Width
+          default: 0
+        height:
+          type: integer
+          title: Height
+          default: 0
+        score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Score
+      type: object
+      required:
+      - image_id
+      title: ImageSummary
+    IndexRequest:
+      properties:
+        folder:
+          type: string
+          title: Folder
+          description: Absolute path to a folder of photos
+        rebuild:
+          type: boolean
+          title: Rebuild
+          description: Drop the library and start over
+          default: false
+        prune_missing:
+          type: boolean
+          title: Prune Missing
+          description: Remove indexed photos whose files are gone
+          default: false
+      type: object
+      required:
+      - folder
+      title: IndexRequest
+    JobOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        kind:
+          type: string
+          title: Kind
+        status:
+          type: string
+          title: Status
+        phase:
+          type: string
+          title: Phase
+          default: ''
+        current:
+          type: integer
+          title: Current
+          default: 0
+        total:
+          type: integer
+          title: Total
+          default: 0
+        percent:
+          type: number
+          title: Percent
+          default: 0.0
+        elapsed:
+          type: number
+          title: Elapsed
+          default: 0.0
+        detail:
+          additionalProperties: true
+          type: object
+          title: Detail
+        result:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Result
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - id
+      - kind
+      - status
+      title: JobOut
+    MergePeopleRequest:
+      properties:
+        source_id:
+          type: integer
+          title: Source Id
+        target_id:
+          type: integer
+          title: Target Id
+      type: object
+      required:
+      - source_id
+      - target_id
+      title: MergePeopleRequest
+    PersonOut:
+      properties:
+        person_id:
+          type: integer
+          title: Person Id
+        name:
+          type: string
+          title: Name
+          default: ''
+        photo_count:
+          type: integer
+          title: Photo Count
+          default: 0
+        face_count:
+          type: integer
+          title: Face Count
+          default: 0
+        cover_face_id:
+          type: integer
+          title: Cover Face Id
+          default: -1
+        hidden:
+          type: boolean
+          title: Hidden
+          default: false
+      type: object
+      required:
+      - person_id
+      title: PersonOut
+    ReclusterRequest:
+      properties:
+        threshold:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Threshold
+        knn:
+          anyOf:
+          - type: integer
+            maximum: 200.0
+            minimum: 2.0
+          - type: 'null'
+          title: Knn
+      type: object
+      title: ReclusterRequest
+    RenamePersonRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          title: Name
+      type: object
+      required:
+      - name
+      title: RenamePersonRequest
+    SearchRequest:
+      properties:
+        query:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Query
+          description: Natural-language description
+        start_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+        end_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+        people_ids:
+          items:
+            type: integer
+          type: array
+          title: People Ids
+        people_mode:
+          type: string
+          enum:
+          - any
+          - all
+          title: People Mode
+          default: any
+        has_location:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Location
+        has_faces:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Faces
+        folder:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Folder
+        untagged_only:
+          type: boolean
+          title: Untagged Only
+          default: false
+        sort:
+          type: string
+          enum:
+          - relevance
+          - date_desc
+          - date_asc
+          - added_desc
+          - random
+          title: Sort
+          default: relevance
+        page:
+          type: integer
+          minimum: 1.0
+          title: Page
+          default: 1
+        per_page:
+          anyOf:
+          - type: integer
+            maximum: 1000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Per Page
+        min_score:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: -1.0
+          - type: 'null'
+          title: Min Score
+          description: Drop semantic matches below this cosine similarity
+      type: object
+      title: SearchRequest
+    SearchResponse:
+      properties:
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        per_page:
+          type: integer
+          title: Per Page
+        took_ms:
+          type: number
+          title: Took Ms
+          default: 0.0
+        scored:
+          type: boolean
+          title: Scored
+          default: false
+        results:
+          items:
+            $ref: '#/components/schemas/ImageSummary'
+          type: array
+          title: Results
+      type: object
+      required:
+      - total
+      - page
+      - per_page
+      - results
+      title: SearchResponse
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
