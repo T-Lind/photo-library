@@ -1,0 +1,14 @@
+# The subset needed to run the API and tests without any ML models.
+# Useful for CI, and for a machine that only serves an already-built library.
+lancedb~=0.14.0
+pyarrow~=17.0
+numpy>=1.26,<3
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pydantic-settings>=2.4
+python-multipart>=0.0.9
+pillow>=11.0
+pillow-heif>=0.20
+ExifRead>=3.0
+tqdm>=4.66
