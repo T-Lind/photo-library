@@ -108,6 +108,50 @@ def cmd_compact(args) -> int:
     return 0
 
 
+def cmd_models(args) -> int:
+    from .models import ensure_face_model, status
+
+    settings = get_settings()
+    if args.action == "status":
+        print(json.dumps(status(settings), indent=2))
+        return 0
+
+    report = status(settings)
+    if report["ready"]:
+        print("All model weights are already installed.")
+        return 0
+
+    from tqdm import tqdm
+
+    bar = {"pbar": None}
+
+    def progress(name: str, done: int, total: int) -> None:
+        if bar["pbar"] is None:
+            bar["pbar"] = tqdm(total=total, unit="B", unit_scale=True, desc=name)
+        bar["pbar"].n = done
+        bar["pbar"].refresh()
+
+    path = ensure_face_model(settings, progress)
+    if bar["pbar"]:
+        bar["pbar"].close()
+    print(f"Installed to {path}")
+    return 0
+
+
+def cmd_verify_model(args) -> int:
+    """Prove the ONNX runtime still reproduces the exported 🤗 pipeline."""
+    from .embeddings.onnx_vision import OnnxVisionEmbedder
+
+    settings = get_settings()
+    report = OnnxVisionEmbedder(args.dir or settings.onnx_model_dir).self_check()
+    print(json.dumps(report, indent=2))
+    if not report.get("checked"):
+        print("No golden.json — re-export with tools/export_onnx.py to enable "
+              "this check.", file=sys.stderr)
+        return 1
+    return 0 if report.get("ok") else 1
+
+
 def cmd_openapi(args) -> int:
     """Print the OpenAPI schema, so the committed spec never drifts."""
     from .api.app import create_app
@@ -174,6 +218,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("compact", help="Compact the database and rebuild indexes")
     p.set_defaults(func=cmd_compact)
+
+    p = sub.add_parser("models", help="Show or download model weights")
+    p.add_argument("action", choices=["status", "fetch"], nargs="?", default="status")
+    p.set_defaults(func=cmd_models)
+
+    p = sub.add_parser("verify-model",
+                       help="Check the ONNX runtime matches the exported model")
+    p.add_argument("--dir", default=None, help="Exported model directory")
+    p.set_defaults(func=cmd_verify_model)
 
     p = sub.add_parser("openapi", help="Print the OpenAPI schema")
     p.add_argument("--format", choices=["yaml", "json"], default="yaml")

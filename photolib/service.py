@@ -800,6 +800,35 @@ class PhotoService:
 
         return self.jobs.submit("recluster", run)
 
+    def model_status(self) -> dict:
+        from .models import status
+
+        return status(self.settings)
+
+    def start_fetch_models_job(self):
+        """Download any missing model weights, with progress.
+
+        Only the face model is ever fetched — the image/text model ships with
+        the application. The desktop app calls this on first launch so the
+        download is a visible, cancellable step rather than a silent stall
+        the first time someone searches.
+        """
+        from .models import ensure_face_model
+
+        def run(progress) -> dict:
+            def on_bytes(name: str, done: int, total: int) -> None:
+                progress("downloading", done, total, {"model": name})
+
+            progress("downloading", 0, 1, {})
+            path = ensure_face_model(self.settings, on_bytes)
+            # Drop any cached backend so the next call picks up the weights.
+            self._faces = None
+            return {"installed": str(path), **status(self.settings)}
+
+        from .models import status
+
+        return self.jobs.submit("fetch_models", run)
+
     def start_compact_job(self):
         def run(progress) -> dict:
             progress("compacting", 0, 1, {})

@@ -35,9 +35,15 @@ class Settings(BaseSettings):
     # benchmark at a comparable size, and it is Apache-2.0. "stub" is a
     # deterministic hash embedder used by the test suite so CI needs no
     # model weights.
-    embed_backend: Literal["siglip", "clip", "open_clip", "stub"] = "siglip"
+    embed_backend: Literal["siglip", "clip", "open_clip", "onnx", "stub"] = "siglip"
     embed_model: str = "google/siglip2-base-patch16-224"
     embed_batch_size: int = Field(16, ge=1, le=512)
+    # Directory produced by tools/export_onnx.py. The packaged desktop build
+    # sets this and uses the `onnx` backend so it never needs PyTorch.
+    onnx_model_dir: str = Field("models/siglip2-base")
+    onnx_int8: bool = Field(
+        False, description="Prefer int8-quantised graphs when present")
+    onnx_threads: int = Field(0, ge=0, description="0 = onnxruntime default")
     device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
     # float16 on GPU roughly halves memory and speeds up indexing; ignored on CPU.
     embed_fp16: bool = True
@@ -48,6 +54,11 @@ class Settings(BaseSettings):
     # especially on non-frontal faces, children, and low light.
     face_backend: Literal["insightface", "dlib", "stub", "none"] = "insightface"
     face_model: str = "buffalo_l"
+    # The InsightFace "home" directory. It resolves models at
+    # <home>/models/<name>. Its own default is ~/.insightface; keeping it
+    # under the app's data directory makes a packaged install self-contained
+    # and trivial to delete.
+    face_model_root: str = Field("data/models/insightface")
     face_det_size: int = Field(640, ge=160, le=1600)
     face_min_det_score: float = Field(0.5, ge=0.0, le=1.0)
     # Faces smaller than this (in pixels, longest side) are detected but not

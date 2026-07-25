@@ -1,0 +1,94 @@
+# PyInstaller spec for the photolib sidecar binary.
+#
+#   pyinstaller packaging/photolib.spec --noconfirm
+#
+# Produces dist/photolib-server/ containing the executable, the exported
+# ONNX model, and the built web UI. Everything the desktop app needs to run
+# is in that folder — no Python, no Node.js, no PyTorch.
+#
+# One-folder rather than one-file on purpose: --onefile unpacks ~500 MB to a
+# temp directory on every launch, which turns a two-second start into twenty.
+
+import os
+import sys
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+ROOT = Path(SPECPATH).parent
+MODEL_DIR = Path(os.environ.get("PHOTOLIB_MODEL_DIR", ROOT / "models" / "siglip2-base"))
+WEB_DIR = Path(os.environ.get("PHOTOLIB_WEB_DIR", ROOT / "web"))
+
+datas = []
+
+if MODEL_DIR.is_dir():
+    datas.append((str(MODEL_DIR), "models/siglip2-base"))
+else:
+    print(f"WARNING: no exported model at {MODEL_DIR}; "
+          "run tools/export_onnx.py first", file=sys.stderr)
+
+if WEB_DIR.is_dir():
+    datas.append((str(WEB_DIR), "web"))
+else:
+    print(f"WARNING: no built web UI at {WEB_DIR}; "
+          "run `npm run build:export` in the frontend repo", file=sys.stderr)
+
+# onnxruntime and lancedb ship compiled extensions and data files that
+# PyInstaller's static analysis does not find on its own.
+binaries = collect_dynamic_libs("onnxruntime") + collect_dynamic_libs("lance")
+datas += collect_data_files("onnxruntime")
+
+hiddenimports = [
+    "uvicorn.logging",
+    "uvicorn.loops.auto",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.lifespan.on",
+    "photolib.embeddings.onnx_vision",
+    "photolib.faces.insight",
+    "pillow_heif",
+    "tokenizers",
+]
+
+# Nothing here uses PyTorch — the ONNX backend is the entire point. Excluding
+# them explicitly keeps a stray transitive import from dragging in gigabytes.
+excludes = [
+    "torch", "torchvision", "transformers", "tensorflow", "jax",
+    "matplotlib", "scipy", "pandas", "IPython", "notebook", "pytest",
+    "tkinter", "sklearn",
+]
+
+a = Analysis(
+    [str(ROOT / "photolib" / "desktop.py")],
+    pathex=[str(ROOT)],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    runtime_hooks=[],
+    excludes=excludes,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="photolib-server",
+    debug=False,
+    strip=False,
+    upx=False,          # UPX-compressed binaries are a common false positive
+    console=True,       # stdout is the readiness handshake with the shell
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="photolib-server",
+)

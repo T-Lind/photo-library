@@ -108,6 +108,31 @@ def cancel_job(job_id: str, service: PhotoService = Depends(get_service)):
     return {"cancelled": job_id}
 
 
+@router.get("/admin/models")
+def models(service: PhotoService = Depends(get_service)):
+    """Which model weights are present, and what still needs downloading.
+
+    The desktop app polls this on launch so a first run can show a download
+    step instead of appearing to hang the first time someone searches.
+    """
+    try:
+        return service.model_status()
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/admin/models/fetch", response_model=JobOut)
+def fetch_models(service: PhotoService = Depends(get_service)):
+    """Download missing model weights in the background."""
+    try:
+        job = service.start_fetch_models_job()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise translate_errors(exc)
+    return JobOut(**job.to_dict())
+
+
 @router.get("/admin/duplicates")
 def duplicates(max_distance: int = Query(6, ge=0, le=20),
                limit: int = Query(200, ge=1, le=1000),

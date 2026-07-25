@@ -1,0 +1,5 @@
+target/
+gen/
+# Sidecar binaries are produced by the PyInstaller build, not committed.
+binaries/*
+!binaries/.gitkeep

@@ -26,6 +26,13 @@ def build_embedder(settings: Optional[Settings] = None) -> Embedder:
 
         return StubEmbedder(model_name=s.embed_model if s.embed_model.startswith("stub") else "stub-v1")
 
+    if s.embed_backend == "onnx":
+        from .onnx_vision import OnnxVisionEmbedder
+
+        return OnnxVisionEmbedder(
+            s.onnx_model_dir, batch_size=s.embed_batch_size,
+            prefer_int8=s.onnx_int8, threads=s.onnx_threads)
+
     if s.embed_backend == "open_clip":
         from .hf_vision import OpenClipEmbedder
 
