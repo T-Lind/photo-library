@@ -137,3 +137,34 @@ def test_model_change_is_refused_rather_than_silently_corrupting(indexer, servic
 
     with pytest.raises(SchemaMismatch, match="different-model"):
         indexer.index_directory(photo_dir)
+
+
+def test_face_boxes_are_stored_in_original_image_coordinates(indexer, service,
+                                                             tmp_path):
+    """Detection runs on a downscaled buffer; boxes must be scaled back.
+
+    Otherwise a face crop taken from the full-resolution original lands on
+    the wrong part of the photo, and the UI's overlay is offset too.
+    """
+    from photolib.faces.stub import MARKER_WIDTH
+    from photolib.indexer import WORK_MAX_SIDE
+    from tests.conftest import make_photo
+
+    scale = 2
+    big = tmp_path / "big"
+    # Twice the working buffer's long edge, so a scale factor is applied.
+    make_photo(big / "huge-photo.jpg", ["alice"],
+               size=(WORK_MAX_SIDE * scale, 1200))
+    indexer.index_directory(big)
+
+    faces = service.library.faces.to_lance().to_table(
+        columns=["x", "w", "h"]).to_pylist()
+    images = service.library.images.to_lance().to_table(
+        columns=["width"]).to_pylist()
+
+    assert faces, "no face detected in the oversized photo"
+    assert images[0]["width"] == WORK_MAX_SIDE * scale
+    # The stub reports a MARKER_WIDTH-wide box in *buffer* coordinates.
+    # Stored unscaled it would be MARKER_WIDTH; correctly scaled it is
+    # MARKER_WIDTH * scale.
+    assert faces[0]["w"] == MARKER_WIDTH * scale

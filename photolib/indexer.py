@@ -263,12 +263,17 @@ class Indexer:
                         image_id = next_image_id
                         next_image_id += 1
 
+                        # Detection ran on a downscaled buffer; boxes are
+                        # stored in original-image coordinates so that face
+                        # crops and the UI's overlay both line up with the
+                        # full-resolution photo.
+                        scale = self._detection_scale(prep)
                         observations = []
                         for face in faces:
                             observations.append(FaceObservation(
                                 image_id=image_id,
                                 embedding=face.embedding,
-                                bbox=face.bbox,
+                                bbox=_scale_bbox(face.bbox, scale),
                                 det_score=face.det_score,
                                 quality=face.quality,
                                 face_id=next_face_id,
@@ -338,6 +343,13 @@ class Indexer:
                              file_size=0, mtime=0.0, content_hash="", phash=0,
                              taken_at=None, lat=None, lon=None, camera="",
                              error=f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _detection_scale(prep: _Prepared) -> float:
+        """Original width divided by the working buffer's width."""
+        if prep.array is None or prep.array.shape[1] == 0 or prep.width <= 0:
+            return 1.0
+        return prep.width / float(prep.array.shape[1])
 
     @staticmethod
     def _true_size(path: Path, array: np.ndarray) -> Tuple[int, int]:
@@ -436,6 +448,15 @@ class Indexer:
             self.library.images.add(pa.Table.from_pylist(image_rows, schema=img_schema))
         if face_rows:
             self.library.faces.add(pa.Table.from_pylist(face_rows, schema=face_schema))
+
+
+def _scale_bbox(bbox: Tuple[int, int, int, int], scale: float
+                ) -> Tuple[int, int, int, int]:
+    if abs(scale - 1.0) < 1e-6:
+        return bbox
+    x, y, w, h = bbox
+    return (int(round(x * scale)), int(round(y * scale)),
+            int(round(w * scale)), int(round(h * scale)))
 
 
 def _under(path: str, root: Path) -> bool:
