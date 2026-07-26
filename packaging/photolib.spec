@@ -17,7 +17,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 ROOT = Path(SPECPATH).parent
 MODEL_DIR = Path(os.environ.get("PHOTOLIB_MODEL_DIR", ROOT / "models" / "siglip2-base"))
-WEB_DIR = Path(os.environ.get("PHOTOLIB_WEB_DIR", ROOT / "web"))
+WEB_DIR = Path(os.environ.get("PHOTOLIB_WEB_DIR", ROOT / "desktop" / "ui"))
 
 datas = []
 
@@ -31,7 +31,7 @@ if WEB_DIR.is_dir():
     datas.append((str(WEB_DIR), "web"))
 else:
     print(f"WARNING: no built web UI at {WEB_DIR}; "
-          "run `npm run build:export` in the frontend repo", file=sys.stderr)
+          "desktop/ui must contain index.html", file=sys.stderr)
 
 # onnxruntime and lancedb ship compiled extensions and data files that
 # PyInstaller's static analysis does not find on its own.
@@ -54,7 +54,7 @@ hiddenimports = [
 # them explicitly keeps a stray transitive import from dragging in gigabytes.
 excludes = [
     "torch", "torchvision", "transformers", "tensorflow", "jax",
-    "matplotlib", "scipy", "pandas", "IPython", "notebook", "pytest",
+    "matplotlib", "pandas", "IPython", "notebook", "pytest",
     "tkinter", "sklearn",
 ]
 

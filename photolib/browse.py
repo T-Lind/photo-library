@@ -189,9 +189,15 @@ class LibraryIndex:
             mask &= ~tagged
 
         if filters.folder:
-            prefix = filters.folder.rstrip("/")
+            # Store native absolute paths, but compare with a canonical slash
+            # so a Windows backslash does not turn subtree filtering into an
+            # exact-folder-only match.
+            prefix = filters.folder.replace("\\", "/").rstrip("/")
             folder_mask = np.fromiter(
-                (f == prefix or f.startswith(prefix + "/") for f in self.folders),
+                (normalised == prefix or normalised.startswith(prefix + "/")
+                 for normalised in
+                 (folder.replace("\\", "/").rstrip("/")
+                  for folder in self.folders)),
                 dtype=bool, count=n)
             mask &= folder_mask
 

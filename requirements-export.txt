@@ -1,0 +1,9 @@
+# One-time model export toolchain; none of these packages ships in the app.
+# PyTorch is installed separately from its CPU-only package index.
+transformers>=4.49,<5
+onnx~=1.22.0
+onnxscript>=0.5
+onnxruntime~=1.20.0
+tokenizers>=0.20,<0.23
+sentencepiece>=0.2
+protobuf>=5

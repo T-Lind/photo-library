@@ -97,7 +97,7 @@ def configure_environment(data_dir: Optional[Path] = None) -> Path:
 
     # Nothing may reach the network except the explicit, user-initiated
     # model download in photolib.models.
-    from .models import enforce_offline_env
+    from photolib.models import enforce_offline_env
 
     enforce_offline_env()
 
@@ -127,6 +127,8 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=0, help="0 picks a free port")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--data-dir", default=None)
+    parser.add_argument("--verify-model", action="store_true",
+                        help="Verify bundled ONNX preprocessing and exit")
     parser.add_argument("--no-browser", action="store_true",
                         help="Don't open a browser (the desktop shell does it)")
     args = parser.parse_args(argv)
@@ -136,16 +138,31 @@ def main(argv=None) -> int:
 
     import uvicorn
 
-    from .config import get_settings
+    from photolib.config import get_settings
 
     port = args.port or free_port()
     settings = get_settings()
     settings.ensure_dirs()
 
+    if args.verify_model:
+        from photolib.embeddings.onnx_vision import OnnxVisionEmbedder
+
+        report = OnnxVisionEmbedder(settings.onnx_model_dir).self_check()
+        try:
+            from insightface.app import FaceAnalysis  # noqa: F401
+            report["face_runtime"] = True
+        except Exception as exc:
+            report["face_runtime"] = False
+            report["face_error"] = f"{type(exc).__name__}: {exc}"
+        print(json.dumps(report, indent=2), flush=True)
+        return 0 if (report.get("checked") and report.get("ok")
+                     and report.get("face_runtime")) else 1
+
     logger.info("photolib desktop starting: data=%s bundle=%s port=%d",
                 data, bundle_dir(), port)
 
-    from .api.app import create_app
+    from photolib.api.app import create_app
+    from photolib.readiness import run_when_ready
 
     url = f"http://{args.host}:{port}"
 
@@ -159,7 +176,8 @@ def main(argv=None) -> int:
 
             webbrowser.open(url)
 
-    uvicorn.run(create_app(settings, on_ready=announce), host=args.host,
+    run_when_ready(url, announce)
+    uvicorn.run(create_app(settings), host=args.host,
                 port=port, log_level="warning", access_log=False)
     return 0
 

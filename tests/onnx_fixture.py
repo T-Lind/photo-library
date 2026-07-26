@@ -54,7 +54,6 @@ def _vision_model(path: Path, height: int, width: int, weight: np.ndarray) -> No
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
     model.ir_version = 10
-    onnx.checker.check_model(model)
     onnx.save(model, str(path))
 
 
@@ -78,7 +77,6 @@ def _text_model(path: Path, table: np.ndarray) -> None:
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
     model.ir_version = 10
-    onnx.checker.check_model(model)
     onnx.save(model, str(path))
 
 

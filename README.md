@@ -9,8 +9,6 @@ Built for real family libraries: 100k–200k photos and beyond.
 
 ![Photo Example](https://github.com/T-Lind/photo-library/blob/master/photos-example.png)
 
-The web UI lives in a companion repository:
-[T-Lind/photo-library-frontend](https://github.com/T-Lind/photo-library-frontend).
 
 ---
 

@@ -8,12 +8,19 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import get_settings
+from ...folder_picker import choose_photo_folder
 from ...service import PhotoService
 from ..deps import get_service, translate_errors
 from ..schemas import IndexRequest, JobOut, ReclusterRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
+
+
+@router.post("/admin/select-folder")
+def select_folder():
+    """Open the operating system's folder picker for the local desktop UI."""
+    return choose_photo_folder().__dict__
 
 
 @router.get("/stats")

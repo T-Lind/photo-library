@@ -11,7 +11,7 @@ A single native application containing:
 |---|---|
 | `photolib-server` | The Python backend, frozen with PyInstaller |
 | `models/siglip2-base` | The image/text model, exported to ONNX |
-| `web/` | The UI, statically exported from Next.js |
+| `desktop/ui` | The dependency-free HTML/CSS/JS desktop interface |
 | `photolib.exe` | A small Tauri shell that starts the server and opens a window |
 
 There is no Python to install, no Node.js at runtime, and no PyTorch.
@@ -22,10 +22,9 @@ PyTorch is about 2.5 GB installed and is the single most difficult
 dependency to freeze — it loads native libraries through paths PyInstaller's
 static analysis cannot follow, and the resulting binaries are enormous.
 
-The model is exported once to ONNX and run with onnxruntime, which is about
-50 MB and was already a dependency for face recognition. The installer drops
-from roughly 3 GB to roughly 500 MB, cold start gets faster, and the whole
-class of PyTorch freezing problems disappears.
+The model is exported once to ONNX and run with the pinned ONNX Runtime.
+This removes PyTorch from the shipped application and makes the runtime much
+smaller and more predictable, while preserving exact preprocessing parity.
 
 The cost is that preprocessing has to be reimplemented outside 🤗
 `transformers`. That is the one genuinely risky part of this approach, so it
@@ -51,27 +50,33 @@ To do it by hand:
 ```bash
 # 1. Export the model (needs PyTorch; only needed once per model)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install "transformers>=4.49" onnx onnxruntime tokenizers sentencepiece
+pip install -r requirements-export.txt pillow numpy
 python tools/export_onnx.py --model google/siglip2-base-patch16-224 \
                             --out models/siglip2-base
 
-# 2. Build the UI (in the frontend repo)
-npm ci && npm run build:export
-cp -r out ../photo-library/web
-
-# 3. Freeze the server
-pip install -r requirements-min.txt onnxruntime tokenizers insightface pyinstaller
+# 2. Freeze the server (the tracked desktop/ui is bundled directly)
+pip install -r requirements-desktop.txt
 pyinstaller packaging/photolib.spec --noconfirm --clean
 
-# 4. Build the desktop app
+# 3. Stage the complete one-folder sidecar for Tauri
 mkdir -p desktop/src-tauri/binaries
 cp -r dist/photolib-server/* desktop/src-tauri/binaries/
 mv desktop/src-tauri/binaries/photolib-server.exe \
    desktop/src-tauri/binaries/photolib-server-x86_64-pc-windows-msvc.exe
-cd desktop && npm install && npx tauri build
+cd desktop && npm install && npx tauri build --bundles msi
 ```
 
 Installers land in `desktop/src-tauri/target/release/bundle/`.
+
+The full fp32 model is too large for NSIS's in-memory compressor on Windows,
+so the unquantized Windows release uses MSI. Double-clicking the MSI performs
+the normal system install. For a quiet current-user install instead:
+
+```powershell
+msiexec /i photolib_2.0.0_x64_en-US.msi /quiet /norestart `
+  ALLUSERS=2 MSIINSTALLPERUSER=1 `
+  INSTALLDIR="$env:LOCALAPPDATA\Programs\photolib"
+```
 
 Windows needs the MSVC build tools and WebView2 (present on Windows 10 21H2
 and later). macOS needs Xcode command line tools. Linux needs
@@ -81,8 +86,8 @@ and later). macOS needs Xcode command line tools. Linux needs
 
 1. The Tauri shell spawns `photolib-server --no-browser` as a sidecar.
 2. The server picks a **free port** — hardcoding 8000 fails on any machine
-   where something already holds it, in a way a non-technical user has no
-   hope of diagnosing — and prints `PHOTOLIB_READY {"url": ...}` on stdout.
+   where something already holds it — waits until that port is accepting
+   health requests, then prints `PHOTOLIB_READY {"url": ...}`.
 3. The shell reads that line and only then creates the window pointing at it,
    so nobody ever sees a connection-refused page mid-startup.
 4. If the server dies before becoming ready, the shell exits rather than
@@ -120,9 +125,7 @@ the user triggers it: downloading the face recognition weights on first use.
   model directory across by hand instead.
 - The launcher sets `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` so the ML
   libraries cannot contact a model hub behind the application's back.
-- Next.js telemetry is disabled in every build script.
-- The UI uses a system font stack rather than a web font, so it never
-  contacts a font CDN and the build works offline.
+- The tracked UI uses a system font stack and has no build-time or runtime CDN.
 
 The only outbound request the UI can make is if someone clicks a photo's
 coordinates, which opens OpenStreetMap in their browser. No map tiles are
@@ -135,9 +138,9 @@ Approximate, for the base model on Windows:
 | | |
 |---|---|
 | onnxruntime + Python runtime | ~120 MB |
-| SigLIP 2 base, ONNX fp32 | ~750 MB |
+| SigLIP 2 base, ONNX fp32 | ~1.54 GB uncompressed |
 | SigLIP 2 base, ONNX int8 (`--quantize`) | ~200 MB |
-| Web UI | ~1.5 MB |
+| Tracked web UI | ~25 KB |
 | Face weights (downloaded on first use) | ~290 MB |
 
 `--quantize` produces markedly smaller installers. It does cost some

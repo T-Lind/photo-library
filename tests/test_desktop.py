@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+from photolib.folder_picker import FolderChoice, choose_photo_folder
 
 from photolib.desktop import (READY_PREFIX, configure_environment, free_port,
                               user_data_dir)
@@ -168,3 +169,34 @@ def test_module_level_app_is_built_lazily_and_once():
     first = module.app
     assert module._app is first
     assert module.app is first
+
+
+def test_folder_picker_returns_an_absolute_existing_directory(tmp_path, monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = str(tmp_path)
+        stderr = ""
+
+    monkeypatch.setattr("photolib.folder_picker.sys.platform", "win32")
+    monkeypatch.setattr("photolib.folder_picker.shutil.which",
+                        lambda name: "powershell.exe")
+    monkeypatch.setattr("photolib.folder_picker.subprocess.run",
+                        lambda *args, **kwargs: Result())
+
+    choice = choose_photo_folder()
+    assert choice == FolderChoice(path=str(tmp_path.resolve()))
+
+
+def test_folder_picker_cancellation_is_not_an_error(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr("photolib.folder_picker.sys.platform", "win32")
+    monkeypatch.setattr("photolib.folder_picker.shutil.which",
+                        lambda name: "powershell.exe")
+    monkeypatch.setattr("photolib.folder_picker.subprocess.run",
+                        lambda *args, **kwargs: Result())
+
+    assert choose_photo_folder().cancelled is True

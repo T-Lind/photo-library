@@ -30,6 +30,12 @@ import shutil
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from photolib.embeddings.onnx_vision import canonicalize_text
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(message)s")
 logger = logging.getLogger("export_onnx")
 
@@ -91,7 +97,6 @@ def _detects_canonicalization(processor, tokenizer, max_length: int) -> bool:
     capitals and punctuation both ways and see which the processor agrees
     with. A wrong answer here degrades every text query subtly and silently.
     """
-    from photolib.embeddings.onnx_vision import canonicalize_text
 
     probe = PROBE_TEXTS[0]
     try:
@@ -172,17 +177,19 @@ def main(argv=None) -> int:
 
     logger.info("Exporting vision tower (%dx%d)", height, width)
     torch.onnx.export(
-        VisionTower(model), (dummy_pixels,), str(out / "vision.onnx"),
+        VisionTower(model).eval(), (dummy_pixels,), str(out / "vision.onnx"),
         input_names=["pixel_values"], output_names=["embedding"],
         dynamic_axes={"pixel_values": {0: "batch"}, "embedding": {0: "batch"}},
-        opset_version=args.opset, do_constant_folding=True)
+        opset_version=args.opset, do_constant_folding=True,
+        dynamo=False)
 
     logger.info("Exporting text tower (%d tokens)", text_cfg["max_length"])
     torch.onnx.export(
-        TextTower(model), (dummy_ids,), str(out / "text.onnx"),
+        TextTower(model).eval(), (dummy_ids,), str(out / "text.onnx"),
         input_names=["input_ids"], output_names=["embedding"],
         dynamic_axes={"input_ids": {0: "batch"}, "embedding": {0: "batch"}},
-        opset_version=args.opset, do_constant_folding=True)
+        opset_version=args.opset, do_constant_folding=True,
+        dynamo=False)
 
     # The runtime tokenises with the `tokenizers` library alone — no
     # transformers, no sentencepiece, no Python-side vocab handling.

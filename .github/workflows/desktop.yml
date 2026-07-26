@@ -23,8 +23,6 @@ on:
 
 env:
   MODEL: ${{ github.event.inputs.model || 'google/siglip2-base-patch16-224' }}
-  FRONTEND_REPO: t-lind/photo-library-frontend
-  FRONTEND_REF: master
 
 jobs:
   # ---------------------------------------------------------------------
@@ -45,8 +43,7 @@ jobs:
       - name: Install the export toolchain
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install "transformers>=4.49" onnx onnxruntime "tokenizers>=0.20" \
-                      pillow numpy sentencepiece protobuf
+          pip install -r requirements-export.txt pillow numpy
 
       - name: Export to ONNX
         run: |
@@ -65,33 +62,8 @@ jobs:
           retention-days: 7
 
   # ---------------------------------------------------------------------
-  build-ui:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ env.FRONTEND_REPO }}
-          ref: ${{ env.FRONTEND_REF }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - run: npm ci
-      - run: npm run build:export
-        env:
-          NEXT_TELEMETRY_DISABLED: 1
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: web-ui
-          path: out
-          retention-days: 7
-
-  # ---------------------------------------------------------------------
   desktop:
-    needs: [export-model, build-ui]
+    needs: [export-model]
     strategy:
       fail-fast: false
       matrix:
@@ -99,12 +71,15 @@ jobs:
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
             exe: .exe
+            bundles: msi
           - os: macos-latest
             triple: aarch64-apple-darwin
             exe: ""
+            bundles: dmg
           - os: ubuntu-22.04
             triple: x86_64-unknown-linux-gnu
             exe: ""
+            bundles: appimage,deb
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -119,19 +94,14 @@ jobs:
           name: onnx-model
           path: models/siglip2-base
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: web-ui
-          path: web
 
       - name: Install runtime dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          # requirements-min.txt has no torch and no transformers; the
-          # packaged app runs entirely on onnxruntime.
-          pip install -r requirements-min.txt
-          pip install onnxruntime "tokenizers>=0.20" insightface pyinstaller
+          # This lock set has no torch or transformers; the frozen app
+          # runs entirely on the pinned, Windows-tested ONNX Runtime.
+          pip install -r requirements-desktop.txt
 
       - name: Build the sidecar
         shell: bash
@@ -160,7 +130,7 @@ jobs:
         run: |
           # Prove the frozen binary's NumPy preprocessing still reproduces
           # the 🤗 pipeline, using the golden vectors from the export.
-          PHOTO_ONNX_MODEL_DIR=models/siglip2-base python -m photolib.cli verify-model
+          ./dist/photolib-server/photolib-server${{ matrix.exe }} --verify-model --data-dir "$PWD/verify-data"
 
       - name: Stage the sidecar for Tauri
         shell: bash
@@ -188,7 +158,7 @@ jobs:
         working-directory: desktop
         run: |
           npm install
-          npx tauri build
+          npx tauri build --bundles "${{ matrix.bundles }}"
 
       - uses: actions/upload-artifact@v4
         with:
