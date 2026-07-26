@@ -16,7 +16,7 @@ from .. import __version__
 from ..config import Settings, get_settings
 from ..webui import mount_web_ui
 from .deps import get_service
-from .routers import admin, faces, images, people, search
+from .routers import admin, albums, faces, images, people, search
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def create_app(settings: Settings | None = None,
                             content={"detail": "Internal server error"})
 
     for router in (search.router, images.router, people.router,
-                   faces.router, admin.router):
+                   faces.router, albums.router, admin.router):
         app.include_router(router, prefix=API_PREFIX)
 
     @app.get("/api")

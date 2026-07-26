@@ -30,6 +30,13 @@ IMAGES = "images"
 FACES = "faces"
 PEOPLE = "people"
 META = "meta"
+# Extracted text, one row per scanned image. A separate table rather than an
+# images column so that adding OCR to an existing library is an append, not
+# a schema migration — no re-embedding, no version bump.
+OCR = "ocr"
+# User-curated collections. Also created lazily, for the same reason.
+ALBUMS = "albums"
+ALBUM_ITEMS = "album_items"
 
 UNASSIGNED = -1  # person_id for a face that belongs to no person yet
 
@@ -106,6 +113,28 @@ META_SCHEMA = pa.schema([
     pa.field("value", pa.string()),
 ])
 
+# A row exists for every image that has been *scanned*, even when no text
+# was found — that is what lets a backfill know what is left to do.
+OCR_SCHEMA = pa.schema([
+    pa.field("image_id", pa.int64(), nullable=False),
+    pa.field("text", pa.string()),
+    pa.field("engine", pa.string()),
+    pa.field("updated_at", pa.timestamp("ms")),
+])
+
+ALBUMS_SCHEMA = pa.schema([
+    pa.field("album_id", pa.int32(), nullable=False),
+    pa.field("name", pa.string()),
+    pa.field("created_at", pa.timestamp("ms")),
+    pa.field("cover_image_id", pa.int64()),
+])
+
+ALBUM_ITEMS_SCHEMA = pa.schema([
+    pa.field("album_id", pa.int32(), nullable=False),
+    pa.field("image_id", pa.int64(), nullable=False),
+    pa.field("added_at", pa.timestamp("ms")),
+])
+
 
 @dataclass(frozen=True)
 class LibraryMeta:
@@ -163,6 +192,39 @@ class Library:
     @property
     def people(self):
         return self._db.open_table(PEOPLE)
+
+    @property
+    def ocr(self):
+        return self._db.open_table(OCR)
+
+    def has_ocr(self) -> bool:
+        return OCR in self.table_names()
+
+    def ensure_ocr(self):
+        """Create the OCR table on first use — old libraries gain it in place."""
+        with self._lock:
+            if OCR not in self.table_names():
+                self._db.create_table(OCR, schema=OCR_SCHEMA)
+        return self._db.open_table(OCR)
+
+    @property
+    def albums(self):
+        return self._db.open_table(ALBUMS)
+
+    @property
+    def album_items(self):
+        return self._db.open_table(ALBUM_ITEMS)
+
+    def has_albums(self) -> bool:
+        return ALBUMS in self.table_names()
+
+    def ensure_albums(self) -> None:
+        with self._lock:
+            names = set(self.table_names())
+            if ALBUMS not in names:
+                self._db.create_table(ALBUMS, schema=ALBUMS_SCHEMA)
+            if ALBUM_ITEMS not in names:
+                self._db.create_table(ALBUM_ITEMS, schema=ALBUM_ITEMS_SCHEMA)
 
     def initialised(self) -> bool:
         names = set(self.table_names())
@@ -318,7 +380,9 @@ class Library:
         library that has been updated a few hundred times reads far more
         files than it needs to.
         """
-        for name in (IMAGES, FACES, PEOPLE):
+        for name in (IMAGES, FACES, PEOPLE, OCR):
+            if name == OCR and not self.has_ocr():
+                continue
             try:
                 ds = self._db.open_table(name).to_lance()
                 ds.optimize.compact_files()

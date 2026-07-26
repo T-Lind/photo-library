@@ -21,8 +21,12 @@ const state = {
   currentPerson: null,
   selectedFaces: new Set(),
   selectedModalFace: null,
+  modalImageId: null,
   forgetArmed: false,
   mergeArmedId: null,
+  albums: [],
+  currentAlbum: null,
+  albumDeleteArmed: false,
   loadCount: 0,
 };
 
@@ -309,14 +313,17 @@ async function findActiveJob() {
 
 function setView(view) {
   state.view = view;
-  for (const [id, name] of [["photosView", "photos"], ["peopleView", "people"], ["manageView", "manage"]]) {
+  for (const [id, name] of [["photosView", "photos"], ["peopleView", "people"],
+                            ["albumsView", "albums"], ["manageView", "manage"]]) {
     $(id).classList.toggle("hidden", view !== name);
   }
-  for (const [id, name] of [["tabPhotos", "photos"], ["tabPeople", "people"], ["tabManage", "manage"]]) {
+  for (const [id, name] of [["tabPhotos", "photos"], ["tabPeople", "people"],
+                            ["tabAlbums", "albums"], ["tabManage", "manage"]]) {
     $(id).classList.toggle("active", view === name);
     $(id).setAttribute("aria-selected", String(view === name));
   }
   if (view === "people") loadPeopleView();
+  if (view === "albums") loadAlbumsView();
   if (view === "manage") loadManageView();
 }
 
@@ -570,7 +577,8 @@ function renderPhotos(result) {
           <span>${escapeHtml(formatDate(photo.taken_at))}</span>
           <span>${photo.face_count ? `${photo.face_count}👤` : ""}</span>
         </span>
-        ${typeof photo.score === "number" ? `<span class="score mono" title="Match strength">${Math.round(photo.score * 100)}</span>` : ""}
+        ${photo.text_match ? '<span class="score mono text-hit" title="The query matched text inside this image">TEXT</span>'
+          : typeof photo.score === "number" ? `<span class="score mono" title="Match strength">${Math.round(photo.score * 100)}</span>` : ""}
       </button>
     `).join("");
     grid.querySelectorAll(".photo").forEach((button) => {
@@ -633,7 +641,10 @@ function renderTimeline() {
 
 async function openPhoto(imageId, filename = "") {
   state.modalIndex = state.results.findIndex((r) => r.image_id === Number(imageId));
+  state.modalImageId = Number(imageId);
   updateModalNav();
+  $("albumPickPanel").classList.add("hidden");
+  $("modalAlbumBtn").textContent = "Add to album";
   $("photoModal").classList.remove("hidden");
   $("modalImage").src = `${API}/images/${imageId}`;
   $("modalName").textContent = filename || "Loading…";
@@ -672,6 +683,8 @@ function renderExif(details) {
   add("file", details.file_size ? formatBytes(details.file_size) : "");
   add("folder", details.folder);
   add("place", details.place);
+  add("text", details.ocr_text
+    ? details.ocr_text.replaceAll("\n", " · ").slice(0, 300) : "");
   $("modalDetailsBtn").classList.toggle("hidden",
     !rows.length && details.lat == null);
   const hasGps = details.lat != null && details.lon != null;
@@ -928,10 +941,20 @@ function startInlineRename(tile, personId) {
   input.addEventListener("blur", () => finish(true));
 }
 
+function mergeReviewOpen() {
+  return localStorage.getItem("photolib.mergeOpen") === "1";
+}
+
+function applyMergeCollapse() {
+  const open = mergeReviewOpen();
+  $("mergeBody").classList.toggle("hidden", !open);
+  $("mergeToggle").setAttribute("aria-expanded", String(open));
+  $("mergeToggle").querySelector(".collapse-chevron").textContent = open ? "▾" : "▸";
+}
+
 async function loadMergeSuggestions() {
-  const panel = $("mergeSuggestPanel");
   const list = $("mergeSuggestList");
-  panel.classList.remove("hidden");
+  applyMergeCollapse();
   try {
     // A low floor keeps the section alive with long-shot candidates; the
     // similarity badge tells the user how seriously to take each one.
@@ -939,6 +962,8 @@ async function loadMergeSuggestions() {
     const dismissed = dismissedMerges();
     const pairs = (body.suggestions || []).filter(
       (s) => !dismissed.has(mergeKey(s.source.person_id, s.target.person_id)));
+    $("mergeCount").textContent = pairs.length
+      ? `${pairs.length} TO REVIEW` : "ALL CLEAR";
     if (!pairs.length) {
       list.innerHTML = '<div class="empty slim-empty">Nothing left to review — no two people look alike right now.</div>';
       return;
@@ -983,6 +1008,7 @@ async function loadMergeSuggestions() {
       });
     });
   } catch {
+    $("mergeCount").textContent = "";
     list.innerHTML = '<div class="empty slim-empty">Merge suggestions are unavailable right now.</div>';
   }
 }
@@ -1273,6 +1299,7 @@ async function detachSelectedFaces() {
 
 async function loadManageView() {
   loadRoots();
+  loadOcrStatus();
   refreshModels().catch(() => {});
 }
 
@@ -1399,6 +1426,331 @@ async function loadDupes() {
 }
 
 // ---------------------------------------------------------------------------
+// Albums
+// ---------------------------------------------------------------------------
+
+async function loadAlbums() {
+  try {
+    state.albums = (await request("/albums")).albums || [];
+  } catch {
+    state.albums = [];
+  }
+}
+
+async function loadAlbumsView() {
+  $("albumDetail").classList.add("hidden");
+  $("albumsHome").classList.remove("hidden");
+  startLoad();
+  try {
+    await loadAlbums();
+    renderAlbumsGrid();
+  } finally {
+    endLoad();
+  }
+}
+
+function albumCoverHtml(album) {
+  if (album.cover_image_id >= 0) {
+    return `<img loading="lazy" src="${API}/images/${album.cover_image_id}/thumbnail?size=grid&format=webp" alt="">`;
+  }
+  return '<span class="album-blank" aria-hidden="true">▦</span>';
+}
+
+function renderAlbumsGrid() {
+  const grid = $("albumsGrid");
+  if (!state.albums.length) {
+    grid.innerHTML = '<div class="empty">No albums yet. Name one above, then add photos from the viewer or the suggestions inside the album.</div>';
+    return;
+  }
+  grid.innerHTML = state.albums.map((album) => `
+    <button class="album-card" type="button" data-album-id="${album.album_id}">
+      <span class="album-cover">${albumCoverHtml(album)}</span>
+      <span class="album-name">${escapeHtml(album.name)}</span>
+      <span class="album-count mono">${album.photo_count} ${album.photo_count === 1 ? "PHOTO" : "PHOTOS"}</span>
+    </button>
+  `).join("");
+  grid.querySelectorAll(".album-card").forEach((card) => {
+    card.addEventListener("click", () => openAlbum(Number(card.dataset.albumId)));
+  });
+}
+
+async function createAlbum(name, imageIds = []) {
+  const album = await request("/albums", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  if (imageIds.length) {
+    await request(`/albums/${album.album_id}/items`, {
+      method: "POST",
+      body: JSON.stringify({ image_ids: imageIds }),
+    });
+  }
+  await loadAlbums();
+  return album;
+}
+
+async function openAlbum(albumId) {
+  state.albumDeleteArmed = false;
+  $("albumDelete").textContent = "Delete album";
+  $("albumsHome").classList.add("hidden");
+  $("albumDetail").classList.remove("hidden");
+  $("albumPhotos").innerHTML = skeletonGrid(6);
+  $("albumSuggestions").innerHTML = "";
+  startLoad();
+  try {
+    const detail = await request(`/albums/${albumId}?limit=500`);
+    state.currentAlbum = detail;
+    $("albumTitle").value = detail.name;
+    $("albumMeta").textContent =
+      `${detail.photo_count} ${detail.photo_count === 1 ? "PHOTO" : "PHOTOS"}`;
+    renderAlbumPhotos(detail);
+    loadAlbumSuggestions(albumId);
+  } catch (error) {
+    showError(`Could not open the album: ${error.message}`);
+    loadAlbumsView();
+  } finally {
+    endLoad();
+  }
+}
+
+function renderAlbumPhotos(detail) {
+  const grid = $("albumPhotos");
+  $("albumPhotosTitle").textContent = `Photos (${detail.images.length})`;
+  if (!detail.images.length) {
+    grid.innerHTML = '<div class="empty">Empty so far. Add photos from the suggestions above, or from any photo\'s "Add to album" button.</div>';
+    return;
+  }
+  grid.innerHTML = detail.images.map((photo) => `
+    <div class="photo album-photo" data-image-id="${photo.image_id}">
+      <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
+      <button class="album-remove mono" type="button" data-remove="${photo.image_id}" title="Remove from album">×</button>
+    </div>
+  `).join("");
+  grid.querySelectorAll(".album-photo").forEach((tile) => {
+    tile.addEventListener("click", (event) => {
+      if (event.target.closest(".album-remove")) return;
+      openPhoto(Number(tile.dataset.imageId));
+    });
+  });
+  grid.querySelectorAll(".album-remove").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const album = state.currentAlbum;
+      if (!album) return;
+      try {
+        await request(`/albums/${album.album_id}/items/remove`, {
+          method: "POST",
+          body: JSON.stringify({ image_ids: [Number(button.dataset.remove)] }),
+        });
+        openAlbum(album.album_id);
+      } catch (error) {
+        showError(`Could not remove the photo: ${error.message}`);
+      }
+    });
+  });
+}
+
+async function loadAlbumSuggestions(albumId) {
+  const row = $("albumSuggestions");
+  row.innerHTML = '<div class="empty slim-empty">Looking for photos that fit…</div>';
+  try {
+    const body = await request(`/albums/${albumId}/suggestions?limit=18`);
+    const suggestions = body.suggestions || [];
+    if (!suggestions.length) {
+      row.innerHTML = '<div class="empty slim-empty">Add a photo or two first — suggestions come from what the album already holds.</div>';
+      return;
+    }
+    row.innerHTML = suggestions.map((photo) => `
+      <div class="dupe-thumb suggest-thumb" data-image-id="${photo.image_id}">
+        <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="">
+        <button class="mini-btn yes add-suggest" type="button" data-add="${photo.image_id}" aria-label="Add to album">+</button>
+      </div>
+    `).join("");
+    row.querySelectorAll(".suggest-thumb").forEach((thumb) => {
+      thumb.addEventListener("click", (event) => {
+        if (event.target.closest(".add-suggest")) return;
+        openPhoto(Number(thumb.dataset.imageId));
+      });
+    });
+    row.querySelectorAll(".add-suggest").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const album = state.currentAlbum;
+        if (!album) return;
+        button.disabled = true;
+        try {
+          await request(`/albums/${album.album_id}/items`, {
+            method: "POST",
+            body: JSON.stringify({ image_ids: [Number(button.dataset.add)] }),
+          });
+          openAlbum(album.album_id);
+        } catch (error) {
+          showError(`Could not add the photo: ${error.message}`);
+          button.disabled = false;
+        }
+      });
+    });
+  } catch {
+    row.innerHTML = "";
+  }
+}
+
+async function saveAlbumTitle() {
+  const album = state.currentAlbum;
+  if (!album) return;
+  const name = $("albumTitle").value.trim();
+  if (!name || name === album.name) return;
+  try {
+    await request(`/albums/${album.album_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    });
+    album.name = name;
+    await loadAlbums();
+  } catch (error) {
+    showError(`Rename failed: ${error.message}`);
+  }
+}
+
+async function deleteAlbum() {
+  const album = state.currentAlbum;
+  if (!album) return;
+  if (!state.albumDeleteArmed) {
+    state.albumDeleteArmed = true;
+    $("albumDelete").textContent = "Really delete? Photos stay in the library";
+    return;
+  }
+  try {
+    await request(`/albums/${album.album_id}`, { method: "DELETE" });
+    state.currentAlbum = null;
+    loadAlbumsView();
+  } catch (error) {
+    showError(`Could not delete the album: ${error.message}`);
+  }
+}
+
+function toggleAlbumPicker() {
+  const panel = $("albumPickPanel");
+  const show = panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !show);
+  $("modalAlbumBtn").setAttribute("aria-expanded", String(show));
+  if (!show) return;
+  loadAlbums().then(() => {
+    $("albumPickList").innerHTML = state.albums.length
+      ? state.albums.map((album) => `
+          <button class="picker-row" type="button" data-album-id="${album.album_id}">
+            <span class="picker-name">${escapeHtml(album.name)}</span>
+            <span class="picker-count mono">${album.photo_count}</span>
+          </button>`).join("")
+      : '<div class="empty slim-empty">No albums yet — create one below.</div>';
+    $("albumPickList").querySelectorAll(".picker-row").forEach((rowEl) => {
+      rowEl.addEventListener("click", () =>
+        addCurrentPhotoToAlbum(Number(rowEl.dataset.albumId)));
+    });
+  });
+}
+
+async function addCurrentPhotoToAlbum(albumId) {
+  if (state.modalImageId == null) return;
+  try {
+    await request(`/albums/${albumId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ image_ids: [state.modalImageId] }),
+    });
+    $("albumPickPanel").classList.add("hidden");
+    $("modalAlbumBtn").textContent = "Added ✓";
+    setTimeout(() => { $("modalAlbumBtn").textContent = "Add to album"; }, 1500);
+  } catch (error) {
+    showError(`Could not add to the album: ${error.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Paste an image to search
+// ---------------------------------------------------------------------------
+
+async function searchByImageFile(file) {
+  clearError();
+  setView("photos");
+  $("photoGrid").innerHTML = skeletonGrid();
+  startLoad();
+  try {
+    const form = new FormData();
+    form.append("file", file, file.name || "pasted.png");
+    form.append("per_page", String(state.perPage));
+    const response = await fetch(`${API}/search/by-image`, {
+      method: "POST",
+      body: form,
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.detail || `Search failed (${response.status})`);
+    }
+    state.similarTo = { pasted: true };
+    $("similarText").textContent = "Results for the image you pasted.";
+    $("similarBanner").classList.remove("hidden");
+    renderPhotos(body);
+    $("resultCount").textContent =
+      `${body.total.toLocaleString()} MATCHES · PASTED IMAGE`;
+    $("pager").classList.add("hidden");
+  } catch (error) {
+    $("photoGrid").innerHTML = "";
+    showError(`Image search failed: ${error.message}`);
+  } finally {
+    endLoad();
+  }
+}
+
+function handlePaste(event) {
+  const items = event.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) {
+        event.preventDefault();
+        searchByImageFile(file);
+      }
+      return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OCR status (Library tab)
+// ---------------------------------------------------------------------------
+
+async function loadOcrStatus() {
+  try {
+    const status = await request("/admin/ocr");
+    const line = $("ocrStatusLine");
+    if (!status.available) {
+      $("ocrScan").disabled = true;
+      $("ocrCopy").textContent =
+        "The OCR engine is not installed in this build, so text inside photos cannot be read yet.";
+      line.innerHTML = "";
+      return;
+    }
+    $("ocrScan").disabled = Boolean(state.activeJob);
+    const remaining = Math.max(0, status.total_images - status.scanned);
+    $("ocrScan").textContent = remaining ? "Scan photo text" : "Rescan (up to date)";
+    line.innerHTML = `<div class="model-line"><span>coverage</span>` +
+      `<span>${status.scanned.toLocaleString()} of ${status.total_images.toLocaleString()} scanned` +
+      ` · ${status.with_text.toLocaleString()} with text</span></div>`;
+  } catch {
+    $("ocrStatusLine").innerHTML = "";
+  }
+}
+
+async function startOcrScan() {
+  clearError();
+  try {
+    const job = await request("/admin/ocr", { method: "POST" });
+    await monitorJob(job);
+    loadOcrStatus();
+  } catch (error) {
+    showError(`Could not scan for text: ${error.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Stats and startup
 // ---------------------------------------------------------------------------
 
@@ -1461,7 +1813,50 @@ async function init() {
 
   $("tabPhotos").addEventListener("click", () => setView("photos"));
   $("tabPeople").addEventListener("click", () => setView("people"));
+  $("tabAlbums").addEventListener("click", () => setView("albums"));
   $("tabManage").addEventListener("click", () => setView("manage"));
+
+  $("mergeToggle").addEventListener("click", () => {
+    localStorage.setItem("photolib.mergeOpen", mergeReviewOpen() ? "0" : "1");
+    applyMergeCollapse();
+  });
+
+  $("albumCreateForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = $("albumName").value.trim();
+    if (!name) return;
+    try {
+      const album = await createAlbum(name);
+      $("albumName").value = "";
+      openAlbum(album.album_id);
+    } catch (error) {
+      showError(`Could not create the album: ${error.message}`);
+    }
+  });
+  $("albumBack").addEventListener("click", loadAlbumsView);
+  $("albumTitle").addEventListener("blur", saveAlbumTitle);
+  $("albumTitle").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") saveAlbumTitle();
+  });
+  $("albumDelete").addEventListener("click", deleteAlbum);
+  $("modalAlbumBtn").addEventListener("click", toggleAlbumPicker);
+  $("albumPickCreate").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = $("albumPickName").value.trim();
+    if (!name || state.modalImageId == null) return;
+    try {
+      await createAlbum(name, [state.modalImageId]);
+      $("albumPickName").value = "";
+      $("albumPickPanel").classList.add("hidden");
+      $("modalAlbumBtn").textContent = "Added ✓";
+      setTimeout(() => { $("modalAlbumBtn").textContent = "Add to album"; }, 1500);
+    } catch (error) {
+      showError(`Could not create the album: ${error.message}`);
+    }
+  });
+
+  $("ocrScan").addEventListener("click", startOcrScan);
+  document.addEventListener("paste", handlePaste);
 
   $("searchForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1545,6 +1940,12 @@ async function init() {
     }
     if (photoOpen && event.key === "ArrowRight") navigatePhoto(1);
     if (photoOpen && event.key === "ArrowLeft") navigatePhoto(-1);
+    if (event.key === "/" && !photoOpen
+        && !["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
+      event.preventDefault();
+      setView("photos");
+      $("searchInput").focus();
+    }
   });
 
   try {

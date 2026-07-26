@@ -65,6 +65,7 @@
         <nav class="tabs" role="tablist" aria-label="Library views">
           <button id="tabPhotos" class="tab active" type="button" role="tab" aria-selected="true">Photos</button>
           <button id="tabPeople" class="tab" type="button" role="tab" aria-selected="false">People</button>
+          <button id="tabAlbums" class="tab" type="button" role="tab" aria-selected="false">Albums</button>
           <button id="tabManage" class="tab" type="button" role="tab" aria-selected="false">Library</button>
           <span id="resultCount" class="tabs-meta mono"></span>
         </nav>
@@ -126,10 +127,15 @@
 
         <div id="peopleView" class="hidden">
           <section id="mergeSuggestPanel" class="panel">
-            <div class="panel-head">
-              <div><h2>Merge review</h2><p>Likeliest pairs first, long shots included. Merging keeps every photo — and future scans recognise the merged person. Tip: click a person's name below to rename them right there.</p></div>
+            <button id="mergeToggle" class="collapse-head" type="button" aria-expanded="false">
+              <span class="collapse-chevron" aria-hidden="true">▸</span>
+              <h2>Merge review</h2>
+              <span id="mergeCount" class="mono collapse-count"></span>
+            </button>
+            <div id="mergeBody" class="hidden">
+              <p class="collapse-copy">Likeliest pairs first, long shots included. Merging keeps every photo — and future scans recognise the merged person. Tip: click a person's name below to rename them right there.</p>
+              <div id="mergeSuggestList" class="merge-cards"></div>
             </div>
-            <div id="mergeSuggestList" class="merge-cards"></div>
           </section>
           <section id="untaggedPanel" class="panel hidden">
             <div class="panel-head">
@@ -139,6 +145,50 @@
             <div id="untaggedRow" class="thumb-row"></div>
           </section>
           <div id="peopleGrid" class="people-grid"></div>
+        </div>
+
+        <div id="albumsView" class="hidden">
+          <div id="albumsHome">
+            <section class="panel">
+              <div class="panel-head">
+                <div><h2>Albums</h2><p>Collections you curate. Each album also suggests lookalike photos so filling it takes seconds.</p></div>
+                <form id="albumCreateForm" class="album-create">
+                  <input id="albumName" class="field slim" type="text" maxlength="200" placeholder="New album name…" aria-label="New album name">
+                  <button class="btn primary" type="submit">Create</button>
+                </form>
+              </div>
+              <div id="albumsGrid" class="albums-grid"></div>
+            </section>
+          </div>
+
+          <div id="albumDetail" class="hidden">
+            <section class="panel">
+              <div class="panel-head">
+                <div class="album-title-row">
+                  <button id="albumBack" class="btn ghost" type="button">← Albums</button>
+                  <input id="albumTitle" class="field album-title" type="text" maxlength="200" aria-label="Album name">
+                  <span id="albumMeta" class="mono"></span>
+                </div>
+                <button id="albumDelete" class="btn ghost danger" type="button">Delete album</button>
+              </div>
+
+              <div class="person-section">
+                <div class="section-head">
+                  <h4>Looks like it belongs</h4>
+                  <span class="section-hint mono">+ adds the photo to this album</span>
+                </div>
+                <div id="albumSuggestions" class="thumb-row"></div>
+              </div>
+
+              <div class="person-section">
+                <div class="section-head">
+                  <h4 id="albumPhotosTitle">Photos</h4>
+                  <span class="section-hint mono">hover a photo for remove · click to open</span>
+                </div>
+                <div id="albumPhotos" class="grid"></div>
+              </div>
+            </section>
+          </div>
         </div>
 
         <div id="manageView" class="hidden">
@@ -155,6 +205,14 @@
               <input id="pruneMissing" type="checkbox">
               During rescans, remove entries whose original files no longer exist
             </label>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Text in photos</h2><p id="ocrCopy">Read the text inside screenshots and documents so searches match it exactly. Runs once per photo, entirely on this machine.</p></div>
+              <button id="ocrScan" class="btn primary" type="button">Scan photo text</button>
+            </div>
+            <div id="ocrStatusLine" class="mono model-lines"></div>
           </section>
 
           <section class="panel">
@@ -190,6 +248,16 @@
         <div class="modal-buttons">
           <button id="modalDetailsBtn" class="btn ghost" type="button">Details</button>
           <button id="modalSimilar" class="btn ghost" type="button">More like this</button>
+          <div class="album-add">
+            <button id="modalAlbumBtn" class="btn ghost" type="button" aria-haspopup="true" aria-expanded="false">Add to album</button>
+            <div id="albumPickPanel" class="picker-panel right hidden">
+              <div id="albumPickList" class="picker-list"></div>
+              <form id="albumPickCreate" class="album-create">
+                <input id="albumPickName" class="field slim" type="text" maxlength="200" placeholder="New album…" aria-label="New album name">
+                <button class="btn slim-btn" type="submit">Create &amp; add</button>
+              </form>
+            </div>
+          </div>
         </div>
       </div>
       <div id="modalExif" class="exif hidden"></div>

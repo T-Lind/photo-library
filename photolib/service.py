@@ -104,19 +104,31 @@ class PhotoService:
         allowed = self.index.select(filters)
         has_query = bool(query and query.strip())
 
+        score_of: Dict[int, float] = {}
+        text_set: set = set()
         if has_query:
-            rows, scores = self._semantic_rows(query.strip(), allowed, min_score)
+            sem_rows, sem_scores = self._semantic_rows(
+                query.strip(), allowed, min_score)
+            # Exact text hits (from OCR) are the strongest possible signal for
+            # a literal query like "JROTC": the embedding model cannot read
+            # fine print, so text matches rank ahead of semantic ones.
+            text_rows = self._text_rows(query.strip(), allowed)
+            text_set = {int(r) for r in text_rows}
             if sort == "relevance":
-                ordered = rows
+                score_of = {int(r): float(s)
+                            for r, s in zip(sem_rows, sem_scores)}
+                rest = (sem_rows[~np.isin(sem_rows, text_rows)]
+                        if text_rows.size else sem_rows)
+                ordered = np.concatenate([
+                    self.index.order(text_rows, "date_desc"), rest,
+                ]).astype(np.int64)
             else:
-                # An explicit date/random sort re-orders the matches; relevance
-                # scores no longer describe the ordering, so drop them.
-                ordered, scores = self.index.order(rows, sort), None
+                union = np.union1d(sem_rows, text_rows).astype(np.int64)
+                ordered = self.index.order(union, sort)
         else:
             # "relevance" has no meaning without a query.
             ordered = self.index.order(
                 allowed, "date_desc" if sort == "relevance" else sort)
-            scores = None
 
         total = int(ordered.shape[0])
         start = (page - 1) * per_page
@@ -124,10 +136,12 @@ class PhotoService:
         image_ids = self.index.ids_of(window)
 
         results = self.hydrate(image_ids)
-        if scores is not None:
-            score_map = dict(zip(image_ids, scores[start:start + per_page].tolist()))
-            for item in results:
-                item["score"] = round(float(score_map.get(item["image_id"], 0.0)), 4)
+        if has_query:
+            for item, row in zip(results, window.tolist()):
+                if int(row) in text_set:
+                    item["text_match"] = True
+                elif score_of:
+                    item["score"] = round(score_of.get(int(row), 0.0), 4)
 
         return SearchPage(
             total=total, page=page, per_page=per_page, results=results,
@@ -138,6 +152,13 @@ class PhotoService:
                        min_score: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
         vector = self.embedder.embed_texts([query])[0]
         return self._vector_rows(vector, allowed, min_score)
+
+    def _text_rows(self, query: str, allowed: np.ndarray) -> np.ndarray:
+        """Rows whose OCR text contains every word of the query."""
+        tokens = [t for t in query.lower().split() if len(t) >= 2]
+        if not tokens:
+            return np.zeros(0, dtype=np.int64)
+        return self.index.text_match(tokens, allowed)
 
     def _vector_rows(self, vector: np.ndarray, allowed: np.ndarray,
                      min_score: Optional[float] = None,
@@ -295,7 +316,24 @@ class PhotoService:
             }
         details["people"] = list(seen.values())
         details["faces"] = faces
+        details["ocr_text"] = self._ocr_excerpt(image_id)
         return details
+
+    def _ocr_excerpt(self, image_id: int, limit: int = 800) -> str:
+        if not self.library.has_ocr():
+            return ""
+        try:
+            rows = (
+                self.library.ocr.search()
+                .where(f"image_id = {int(image_id)}")
+                .select(["text"])
+                .limit(1)
+                .to_arrow()
+                .to_pylist()
+            )
+        except Exception:
+            return ""
+        return (rows[0]["text"] or "")[:limit] if rows else ""
 
     def faces_in_image(self, image_id: int) -> List[dict]:
         rows = (
@@ -821,6 +859,7 @@ class PhotoService:
             "embed_model": f"{meta.embed_backend}:{meta.embed_model}" if meta else None,
             "embed_dim": meta.image_dim if meta else None,
             "face_model": f"{meta.face_backend}:{meta.face_model}" if meta else None,
+            "ocr": self.ocr_status(),
         }
 
     def timeline(self, filters: Optional[Filters] = None) -> List[dict]:
@@ -992,6 +1031,241 @@ class PhotoService:
         from .models import status
 
         return status(self.settings)
+
+    # ------------------------------------------------------------------
+    # Albums
+    # ------------------------------------------------------------------
+    def list_albums(self) -> List[dict]:
+        if not self.library.has_albums():
+            return []
+        albums = self.library.albums.to_lance().to_table().to_pylist()
+        counts: Dict[int, int] = {}
+        first_item: Dict[int, int] = {}
+        for row in self.library.album_items.to_lance().to_table(
+                columns=["album_id", "image_id"]).to_pylist():
+            aid = int(row["album_id"])
+            counts[aid] = counts.get(aid, 0) + 1
+            first_item.setdefault(aid, int(row["image_id"]))
+        out = []
+        for a in albums:
+            aid = int(a["album_id"])
+            cover = a["cover_image_id"]
+            cover = int(cover) if cover is not None and int(cover) >= 0 else \
+                first_item.get(aid, -1)
+            out.append({
+                "album_id": aid,
+                "name": a["name"] or f"Album {aid}",
+                "photo_count": counts.get(aid, 0),
+                "cover_image_id": cover,
+            })
+        out.sort(key=lambda a: (-a["photo_count"], a["album_id"]))
+        return out
+
+    def get_album(self, album_id: int) -> dict:
+        album = next((a for a in self.list_albums()
+                      if a["album_id"] == int(album_id)), None)
+        if album is None:
+            raise NotFound(f"Album {album_id} not found")
+        return album
+
+    def create_album(self, name: str) -> dict:
+        import pyarrow as pa
+
+        from .db import ALBUMS_SCHEMA
+
+        self.library.ensure_albums()
+        album_id = self.library.next_id("albums", "album_id")
+        self.library.albums.add(pa.Table.from_pylist([{
+            "album_id": int(album_id),
+            "name": name.strip() or f"Album {album_id}",
+            "created_at": now_ms(),
+            "cover_image_id": -1,
+        }], schema=ALBUMS_SCHEMA))
+        return self.get_album(album_id)
+
+    def rename_album(self, album_id: int, name: str) -> dict:
+        self.get_album(album_id)
+        self.library.albums.update(where=f"album_id = {int(album_id)}",
+                                   values={"name": name.strip()})
+        return self.get_album(album_id)
+
+    def delete_album(self, album_id: int) -> dict:
+        self.get_album(album_id)
+        self.library.album_items.delete(f"album_id = {int(album_id)}")
+        self.library.albums.delete(f"album_id = {int(album_id)}")
+        return {"deleted": int(album_id)}
+
+    def album_image_ids(self, album_id: int) -> List[int]:
+        """Album members, newest addition first."""
+        rows = (
+            self.library.album_items.search()
+            .where(f"album_id = {int(album_id)}")
+            .select(["image_id", "added_at"])
+            .limit(100_000)
+            .to_arrow()
+            .to_pylist()
+        )
+        rows.sort(key=lambda r: (r["added_at"] is not None, r["added_at"]),
+                  reverse=True)
+        return [int(r["image_id"]) for r in rows]
+
+    def album_detail(self, album_id: int, limit: int = 500) -> dict:
+        album = self.get_album(album_id)
+        ids = self.album_image_ids(album_id)[:limit]
+        return {**album, "images": self.hydrate(ids)}
+
+    def add_album_items(self, album_id: int, image_ids: Sequence[int]) -> dict:
+        import pyarrow as pa
+
+        from .db import ALBUM_ITEMS_SCHEMA
+
+        self.get_album(album_id)
+        existing = set(self.album_image_ids(album_id))
+        fresh = [int(i) for i in dict.fromkeys(int(i) for i in image_ids)
+                 if int(i) not in existing]
+        # Only accept photos the library actually knows.
+        fresh = [i for i in fresh if self.index.row_of(i) is not None]
+        if fresh:
+            added_at = now_ms()
+            self.library.album_items.add(pa.Table.from_pylist([
+                {"album_id": int(album_id), "image_id": i, "added_at": added_at}
+                for i in fresh], schema=ALBUM_ITEMS_SCHEMA))
+        return {"added": len(fresh), **self.get_album(album_id)}
+
+    def remove_album_items(self, album_id: int, image_ids: Sequence[int]) -> dict:
+        self.get_album(album_id)
+        ids = [int(i) for i in image_ids]
+        if ids:
+            id_list = ", ".join(str(i) for i in ids)
+            self.library.album_items.delete(
+                f"album_id = {int(album_id)} AND image_id IN ({id_list})")
+        return {"removed": len(ids), **self.get_album(album_id)}
+
+    def album_suggestions(self, album_id: int, limit: int = 24) -> List[dict]:
+        """Photos that look like this album, for one-click adding.
+
+        The album's visual identity is the mean of its members' embeddings —
+        crude but effective for the "keep adding beach photos" workflow.
+        """
+        self.get_album(album_id)
+        member_ids = self.album_image_ids(album_id)
+        if not member_ids:
+            return []
+        sample = member_ids[:32]   # newest members define the theme
+        id_list = ", ".join(str(i) for i in sample)
+        rows = (
+            self.library.images.search()
+            .where(f"image_id IN ({id_list})")
+            .select(["vector"])
+            .limit(len(sample))
+            .to_arrow()
+            .to_pylist()
+        )
+        if not rows:
+            return []
+        vectors = np.stack([np.asarray(r["vector"], dtype=np.float32)
+                            for r in rows])
+        centroid = vectors.mean(axis=0)
+        centroid /= max(float(np.linalg.norm(centroid)), 1e-12)
+
+        allowed = self.index.select(Filters())
+        member_rows = {self.index.row_of(i) for i in member_ids}
+        allowed = np.asarray([r for r in allowed if r not in member_rows],
+                             dtype=np.int64)
+        rows_found, scores = self._vector_rows(centroid, allowed, limit=limit)
+        results = self.hydrate(self.index.ids_of(rows_found[:limit]))
+        for item, score in zip(results, scores[:limit]):
+            item["score"] = round(float(score), 4)
+        return results
+
+    # ------------------------------------------------------------------
+    # OCR
+    # ------------------------------------------------------------------
+    def ocr_status(self) -> dict:
+        """Coverage and availability of text recognition."""
+        import importlib.util
+
+        available = self.settings.ocr_backend != "off" and (
+            self.settings.ocr_backend == "stub"
+            or importlib.util.find_spec("rapidocr_onnxruntime") is not None)
+        scanned = with_text = 0
+        if self.ready and self.library.has_ocr():
+            scanned = self.library.ocr.count_rows(None)
+            with_text = self.library.ocr.count_rows("text != ''")
+        return {
+            "available": available,
+            "backend": self.settings.ocr_backend,
+            "scanned": scanned,
+            "with_text": with_text,
+            "total_images": self.index.count if self.ready else 0,
+        }
+
+    def start_ocr_backfill_job(self):
+        """Extract text from every image that has never been scanned.
+
+        Incremental and safe to interrupt: each image gets exactly one OCR
+        row once scanned, so cancelling and re-running picks up where it
+        stopped — no re-embedding, no touching the images table.
+        """
+        from .ocr import build_ocr
+
+        backend = build_ocr(self.settings)
+        if backend is None:
+            raise ValueError(
+                "No OCR engine is available. Install rapidocr-onnxruntime "
+                "(pip install rapidocr-onnxruntime) and try again.")
+        self.require_ready()
+
+        def run(progress) -> dict:
+            import pyarrow as pa
+
+            from .db import OCR_SCHEMA
+            from .imageio import load_rgb_array
+
+            self.library.ensure_ocr()
+            done = {int(i) for i in self.library.ocr.to_lance().to_table(
+                columns=["image_id"])["image_id"].to_pylist()}
+            images = self.library.images.to_lance().to_table(
+                columns=["image_id", "path"]).to_pylist()
+            todo = [(int(r["image_id"]), str(r["path"])) for r in images
+                    if int(r["image_id"]) not in done]
+            # Newest first, so recent photos become text-searchable soonest.
+            todo.sort(key=lambda t: -t[0])
+
+            scanned = with_text = failed = 0
+            batch: List[dict] = []
+
+            def flush() -> None:
+                if batch:
+                    self.library.ocr.add(
+                        pa.Table.from_pylist(batch, schema=OCR_SCHEMA))
+                    batch.clear()
+
+            progress("scanning text", 0, len(todo), {})
+            for i, (image_id, path) in enumerate(todo):
+                text = ""
+                try:
+                    array = load_rgb_array(path, max_side=self.settings.ocr_max_side)
+                    text = backend.extract(array, path)
+                except Exception:
+                    # Unreadable file: record an empty scan so the job
+                    # converges instead of retrying it forever.
+                    failed += 1
+                batch.append({"image_id": image_id, "text": text,
+                              "engine": backend.name, "updated_at": now_ms()})
+                scanned += 1
+                if text:
+                    with_text += 1
+                if len(batch) >= 64:
+                    flush()
+                progress("scanning text", i + 1, len(todo),
+                         {"file": Path(path).name, "with_text": with_text})
+            flush()
+            self.index.invalidate()
+            return {"scanned": scanned, "with_text": with_text,
+                    "failed": failed, "already_scanned": len(done)}
+
+        return self.jobs.submit("ocr", run)
 
     def start_fetch_models_job(self):
         """Download any missing model weights, with progress.

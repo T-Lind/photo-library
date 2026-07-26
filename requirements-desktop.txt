@@ -4,4 +4,7 @@
 onnxruntime~=1.20.0
 tokenizers>=0.20,<0.23
 insightface==1.0.1
+# Text-in-photos search. Ships its ONNX models inside the wheel, so the
+# packaged app stays fully offline.
+rapidocr-onnxruntime~=1.4.4
 pyinstaller~=6.21.0
