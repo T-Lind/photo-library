@@ -29,6 +29,13 @@ from .thumbnails import ThumbnailCache
 logger = logging.getLogger(__name__)
 
 
+def _send_to_trash(path: str) -> None:
+    """Move a file to the OS trash. Module-level so tests can stub it."""
+    from send2trash import send2trash
+
+    send2trash(path)
+
+
 class NotFound(LookupError):
     pass
 
@@ -335,6 +342,25 @@ class PhotoService:
         except Exception:
             return ""
         return (rows[0]["text"] or "")[:limit] if rows else ""
+
+    def ocr_text(self, image_id: int) -> dict:
+        """The complete stored OCR text for one image, for copying out."""
+        self.require_ready()
+        self._image_row(image_id, ["image_id"])  # 404 for unknown ids
+        text = engine = ""
+        if self.library.has_ocr():
+            rows = (
+                self.library.ocr.search()
+                .where(f"image_id = {int(image_id)}")
+                .select(["text", "engine"])
+                .limit(1)
+                .to_arrow()
+                .to_pylist()
+            )
+            if rows:
+                text = rows[0]["text"] or ""
+                engine = rows[0]["engine"] or ""
+        return {"image_id": int(image_id), "text": text, "engine": engine}
 
     def faces_in_image(self, image_id: int) -> List[dict]:
         rows = (
@@ -877,24 +903,261 @@ class PhotoService:
         pairs = [(int(i), int(h)) for i, h in
                  zip(table["image_id"].to_pylist(), table["phash"].to_pylist())
                  if h]
+        sizes = {int(i): int(s or 0) for i, s in
+                 zip(table["image_id"].to_pylist(),
+                     table["file_size"].to_pylist())}
         exact: Dict[str, List[int]] = {}
         for image_id, chash in zip(table["image_id"].to_pylist(),
                                    table["content_hash"].to_pylist()):
             if chash:
                 exact.setdefault(chash, []).append(int(image_id))
 
+        def group_dict(kind: str, ids: List[int]) -> dict:
+            # Per-photo sizes let the UI offer "keep the largest".
+            return {"kind": kind, "image_ids": ids,
+                    "items": [{"image_id": i, "file_size": sizes.get(i, 0)}
+                              for i in ids]}
+
         groups: List[dict] = []
         seen: set = set()
         for chash, ids in exact.items():
             if len(ids) > 1:
-                groups.append({"kind": "identical", "image_ids": sorted(ids)})
+                groups.append(group_dict("identical", sorted(ids)))
                 seen.update(ids)
 
         for group in group_near_duplicates(pairs, max_distance=max_distance):
             remaining = [i for i in group if i not in seen]
             if len(remaining) > 1:
-                groups.append({"kind": "similar", "image_ids": remaining})
+                groups.append(group_dict("similar", remaining))
         return groups[:limit]
+
+    # ------------------------------------------------------------------
+    # Trash
+    # ------------------------------------------------------------------
+    def trash_images(self, image_ids: Sequence[int]) -> dict:
+        """Move originals to the OS trash and drop every trace from the library.
+
+        Never a permanent delete — recovery is the operating system's own
+        Recycle Bin. A row whose file is already gone from disk is still
+        cleaned out of the index, so trashing doubles as stale-row repair.
+        A file the OS refuses to trash keeps its row: the library must not
+        forget a photo that is still on disk.
+        """
+        self.require_ready()
+        ids = list(dict.fromkeys(int(i) for i in image_ids))
+        if not ids:
+            return {"trashed": 0, "missing": 0, "removed": 0, "failed": []}
+
+        id_list = ", ".join(str(i) for i in ids)
+        rows = (
+            self.library.images.search()
+            .where(f"image_id IN ({id_list})")
+            .select(["image_id", "path"])
+            .limit(len(ids))
+            .to_arrow()
+            .to_pylist()
+        )
+        path_of = {int(r["image_id"]): str(r["path"]) for r in rows}
+
+        trashed = missing = 0
+        failed: List[dict] = []
+        removable: List[int] = []
+        for image_id in ids:
+            path = path_of.get(image_id)
+            if path is None:
+                continue
+            if not os.path.exists(path):
+                missing += 1
+                removable.append(image_id)
+                continue
+            try:
+                _send_to_trash(path)
+                trashed += 1
+                removable.append(image_id)
+            except Exception as exc:
+                failed.append({"image_id": image_id, "error": str(exc)})
+
+        affected_people = self._people_in_images(removable)
+        self._remove_image_rows(removable)
+        for person_id in affected_people:
+            self._recompute_person(person_id)
+        self._people_cache = None
+        self.index.invalidate()
+        return {"trashed": trashed, "missing": missing,
+                "removed": len(removable), "failed": failed}
+
+    def _people_in_images(self, image_ids: Sequence[int]) -> List[int]:
+        if not image_ids:
+            return []
+        id_list = ", ".join(str(int(i)) for i in image_ids)
+        hits = (
+            self.library.faces.search()
+            .where(f"image_id IN ({id_list})")
+            .select(["person_id"])
+            .limit(100_000)
+            .to_arrow()
+        )
+        return sorted({int(p) for p in hits["person_id"].to_pylist()
+                       if int(p) != UNASSIGNED})
+
+    def _remove_image_rows(self, image_ids: Sequence[int]) -> None:
+        """Delete images plus every dependent row and cached thumbnail."""
+        if not image_ids:
+            return
+        for start in range(0, len(image_ids), 4096):
+            chunk = image_ids[start:start + 4096]
+            ids = ", ".join(str(int(i)) for i in chunk)
+            self.library.images.delete(f"image_id IN ({ids})")
+            self.library.faces.delete(f"image_id IN ({ids})")
+            if self.library.has_ocr():
+                self.library.ocr.delete(f"image_id IN ({ids})")
+            if self.library.has_albums():
+                self.library.album_items.delete(f"image_id IN ({ids})")
+        for image_id in image_ids:
+            try:
+                self.thumbs.purge_image(int(image_id))
+            except OSError:
+                pass
+
+    # ------------------------------------------------------------------
+    # Curation backup
+    # ------------------------------------------------------------------
+    # The backup holds exactly what a re-index cannot recreate: the names
+    # and hidden flags people were given, and which photos belong to which
+    # album. Photos are keyed by content_hash, so the backup survives file
+    # moves, renames, and a full rebuild (which renumbers every image_id
+    # and person_id).
+
+    def export_curation(self) -> dict:
+        self.require_ready()
+        self.index.ensure_fresh()
+        table = self.library.images.to_lance().to_table(
+            columns=["image_id", "content_hash"])
+        hash_of = {int(i): str(h) for i, h in
+                   zip(table["image_id"].to_pylist(),
+                       table["content_hash"].to_pylist()) if h}
+
+        people_out = []
+        for person in self.people_by_id().values():
+            if not person["name"] and not person["hidden"]:
+                continue  # anonymous clusters are recreatable — skip them
+            rows = self.index._rows_by_person.get(person["person_id"])
+            image_ids = ([int(i) for i in self.index.image_ids[rows]]
+                         if rows is not None else [])
+            people_out.append({
+                "name": person["name"],
+                "hidden": person["hidden"],
+                "photos": sorted({hash_of[i] for i in image_ids
+                                  if i in hash_of}),
+            })
+
+        albums_out = []
+        for album in self.list_albums():
+            members = self.album_image_ids(album["album_id"])
+            albums_out.append({
+                "name": album["name"],
+                "photos": [hash_of[i] for i in members if i in hash_of],
+            })
+
+        return {
+            "format": "photolib-curation",
+            "version": 1,
+            "exported_at": now_ms().isoformat(),
+            "people": people_out,
+            "albums": albums_out,
+            "roots": self._read_roots(),
+        }
+
+    def import_curation(self, data: dict) -> dict:
+        """Restore a curation backup into the current library.
+
+        Albums restore exactly (matched by content_hash). People are
+        best-effort: a rebuilt library has different cluster boundaries, so
+        each exported person is applied to the current person covering the
+        most of their photos — and only when that covers at least half.
+        Weak or conflicting matches are skipped and counted, never guessed.
+        """
+        self.require_ready()
+        if not isinstance(data, dict) or data.get("format") != "photolib-curation":
+            raise ValueError("Not a photolib curation backup")
+
+        table = self.library.images.to_lance().to_table(
+            columns=["image_id", "content_hash"])
+        ids_of: Dict[str, List[int]] = {}
+        for i, h in zip(table["image_id"].to_pylist(),
+                        table["content_hash"].to_pylist()):
+            if h:
+                ids_of.setdefault(str(h), []).append(int(i))
+
+        albums_created = album_items_added = 0
+        existing = {a["name"]: a["album_id"] for a in self.list_albums()}
+        for album in data.get("albums", []):
+            name = str(album.get("name") or "").strip()
+            if not name:
+                continue
+            wanted = [i for h in album.get("photos", [])
+                      for i in ids_of.get(str(h), [])]
+            album_id = existing.get(name)
+            if album_id is None:
+                album_id = self.create_album(name)["album_id"]
+                existing[name] = album_id
+                albums_created += 1
+            if wanted:
+                album_items_added += self.add_album_items(album_id, wanted)["added"]
+
+        self.index.ensure_fresh()
+        row_map = self.index.row_map()
+        people_restored = people_skipped = 0
+        # Biggest exported identities claim their match first.
+        exported_people = sorted(
+            (p for p in data.get("people", [])
+             if str(p.get("name") or "").strip() or p.get("hidden")),
+            key=lambda p: -len(p.get("photos", [])))
+        taken: set = set()
+        for exported in exported_people:
+            name = str(exported.get("name") or "").strip()
+            rows_wanted = np.asarray(sorted({
+                row for h in exported.get("photos", [])
+                for i in ids_of.get(str(h), [])
+                if (row := row_map.get(i)) is not None}), dtype=np.int64)
+            if rows_wanted.size == 0:
+                people_skipped += 1
+                continue
+            best_id, best_overlap = None, 0
+            for person_id, member_rows in self.index._rows_by_person.items():
+                if person_id in taken:
+                    continue
+                overlap = int(np.intersect1d(member_rows, rows_wanted).size)
+                if overlap > best_overlap:
+                    best_id, best_overlap = int(person_id), overlap
+            if best_id is None or best_overlap * 2 < int(rows_wanted.size):
+                people_skipped += 1
+                continue
+            current = self.people_by_id().get(best_id)
+            if current is None or (current["name"] and current["name"] != name):
+                people_skipped += 1  # never overwrite a different name
+                continue
+            if name and current["name"] != name:
+                self.rename_person(best_id, name)
+            if bool(exported.get("hidden")) != current["hidden"]:
+                self.set_person_hidden(best_id, bool(exported.get("hidden")))
+            taken.add(best_id)
+            people_restored += 1
+
+        roots_added = 0
+        for root in data.get("roots", []):
+            try:
+                before = len(self._read_roots())
+                self.add_root(str(root))
+                roots_added += len(self._read_roots()) - before
+            except (ValueError, OSError):
+                pass  # folder no longer exists on this machine
+
+        return {"albums_created": albums_created,
+                "album_items_added": album_items_added,
+                "people_restored": people_restored,
+                "people_skipped": people_skipped,
+                "roots_added": roots_added}
 
     def folders(self) -> List[dict]:
         """Folder tree with counts, for browsing by where files live."""

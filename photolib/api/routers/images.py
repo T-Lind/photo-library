@@ -15,9 +15,24 @@ from ...config import get_settings
 from ...service import PhotoService
 from ...thumbnails import SIZES
 from ..deps import get_service, translate_errors
+from ..schemas import TrashRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/images", tags=["images"])
+
+
+@router.post("/trash")
+def trash_images(req: TrashRequest,
+                 service: PhotoService = Depends(get_service)):
+    """Move photos to the OS Recycle Bin and drop them from the library.
+
+    Nothing is permanently deleted — the files are recoverable from the
+    Recycle Bin. Rows whose files are already missing are cleaned up too.
+    """
+    try:
+        return service.trash_images(req.image_ids)
+    except Exception as exc:
+        raise translate_errors(exc)
 
 MIME_BY_SUFFIX = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
@@ -100,6 +115,15 @@ def get_details(image_id: int, service: PhotoService = Depends(get_service)):
     """Full metadata, the people in the photo, and every detected face box."""
     try:
         return service.image_details(image_id)
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.get("/{image_id}/text")
+def get_text(image_id: int, service: PhotoService = Depends(get_service)):
+    """The full text found inside the image (details carries an excerpt)."""
+    try:
+        return service.ocr_text(image_id)
     except Exception as exc:
         raise translate_errors(exc)
 

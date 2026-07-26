@@ -153,6 +153,18 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .photo:hover .frame-no { opacity: 1; }
 .score { position: absolute; z-index: 1; top: 7px; right: 7px; padding: 2px 7px; border-radius: 999px; background: rgba(11,23,48,.78); color: var(--accent); }
 
+/* selection — the check circle takes the top-left corner, so the frame
+   number steps aside on real tiles (skeletons keep it at the edge) */
+.select-check { position: absolute; z-index: 2; top: 7px; left: 7px; width: 22px; height: 22px;
+  display: grid; place-items: center; border-radius: 50%; border: 1.5px solid rgba(255,255,255,.8);
+  background: rgba(0,0,0,.45); color: transparent; font-size: 12px; font-weight: 800;
+  opacity: 0; transition: opacity .15s ease; cursor: pointer; }
+.photo:hover .select-check, .photo.selected .select-check { opacity: 1; }
+.photo.selected .select-check { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.photo:not(.skeleton) .frame-no { left: 36px; }
+.photo.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(111,160,255,.4); }
+.photo.selected img { opacity: .82; }
+
 .photo.skeleton { border-color: var(--line-soft); background: linear-gradient(110deg, var(--surface) 30%, var(--surface-2) 45%, var(--surface) 60%); background-size: 220% 100%; animation: develop 1.3s ease infinite; }
 .photo.skeleton .frame-no { opacity: 1; color: var(--faint); }
 @keyframes develop { from { background-position: 130% 0; } to { background-position: -90% 0; } }
@@ -171,7 +183,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .modal-nav.prev { left: 12px; }
 .modal-nav.next { right: 12px; }
 .modal-card { position: relative; width: min(1240px, 100%); max-height: 94vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #0b0c0e; }
-.modal-card > img { display: block; width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
+.modal-stage { overflow: hidden; background: #000; }
+.modal-stage img { display: block; width: 100%; max-height: 72vh; object-fit: contain;
+  cursor: zoom-in; user-select: none; touch-action: none; will-change: transform; }
+.modal-stage img.zoomed { cursor: grab; }
+.modal-stage img.zoomed.dragging { cursor: grabbing; }
 .modal-close { position: absolute; z-index: 2; top: 12px; right: 12px; width: 40px; height: 40px; padding: 0; border-radius: 50%; color: #fff; border: 1px solid rgba(255,255,255,.22); background: rgba(0,0,0,.6); font-size: 20px; }
 .modal-info { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 18px 6px; }
 .modal-text strong { display: block; font-size: 15px; }
@@ -314,6 +330,28 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 .model-lines { display: flex; flex-direction: column; gap: 6px; }
 .model-line { display: flex; justify-content: space-between; gap: 14px; padding: 8px 12px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface-2); color: var(--muted); }
+
+/* -- selection bar -------------------------------------------------------------------------------------- */
+.selection-bar { position: fixed; z-index: 90; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px);
+  padding: 10px 12px 10px 20px; border: 1px solid var(--accent-deep); border-radius: 999px;
+  background: rgba(16,19,26,.96); box-shadow: 0 16px 44px rgba(0,0,0,.55); backdrop-filter: blur(10px); }
+.selection-bar > .mono { color: var(--accent); white-space: nowrap; }
+.selection-actions { display: flex; align-items: center; gap: 8px; }
+.selection-actions .btn { min-height: 36px; padding: 0 13px; font-size: 12.5px; white-space: nowrap; }
+.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #2b0808; font-weight: 700; }
+.btn.danger-solid:hover { background: #f07a70; border-color: #f07a70; }
+.picker-panel.up { top: auto; bottom: calc(100% + 8px); }
+
+/* query-image chip + copy text */
+.chip.image-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 5px; }
+.chip.image-chip img { width: 26px; height: 26px; border-radius: 999px; object-fit: cover; display: block; }
+.exif-row.text-row { grid-column: 1 / -1; align-items: center; }
+.copy-text { flex-shrink: 0; margin-left: auto; }
+
+/* duplicates: keep-largest */
+.dupe-keep { margin-left: auto; flex-shrink: 0; }
+.dupe-thumb.keeper { border-color: var(--ok); box-shadow: 0 0 0 2px rgba(87,192,154,.35); }
 
 .hidden { display: none !important; }
 

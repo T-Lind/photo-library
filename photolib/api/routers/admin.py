@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ...config import get_settings
 from ...folder_picker import choose_photo_folder
@@ -189,6 +189,30 @@ def ocr_status(service: PhotoService = Depends(get_service)):
     """Text-recognition availability and coverage."""
     try:
         return service.ocr_status()
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.get("/admin/curation")
+def export_curation(service: PhotoService = Depends(get_service)):
+    """Back up the hand-made data: person names, hidden flags, albums.
+
+    Keyed by content hash, so the backup survives file moves and a full
+    re-index. Face-level assignments are not included — they cannot be
+    reconstructed once face ids change.
+    """
+    try:
+        return service.export_curation()
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/admin/curation")
+def import_curation(data: dict = Body(...),
+                    service: PhotoService = Depends(get_service)):
+    """Restore a curation backup: albums exactly, people by photo overlap."""
+    try:
+        return service.import_curation(data)
     except Exception as exc:
         raise translate_errors(exc)
 

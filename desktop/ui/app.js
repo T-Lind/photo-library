@@ -28,6 +28,11 @@ const state = {
   currentAlbum: null,
   albumDeleteArmed: false,
   loadCount: 0,
+  selection: new Set(),   // image_ids picked for a batch action
+  selectionAnchor: -1,    // index of the last toggle, for shift-ranges
+  selectionScope: "photos", // "photos" or "album" — where the picks live
+  trashArmed: false,
+  imageQuery: null,       // {url, label, blob} — active search-by-image chip
 };
 
 const RECENT_KEY = "photolib.recentSearches";
@@ -417,12 +422,27 @@ function renderPeopleOptions(filterText) {
   });
 }
 
+function setImageQuery(next) {
+  if (state.imageQuery?.blob) URL.revokeObjectURL(state.imageQuery.url);
+  state.imageQuery = next;
+}
+
+function clearImageQuery() {
+  if (!state.imageQuery) return;
+  setImageQuery(null);
+  renderSelectedPeople();
+}
+
 function renderSelectedPeople() {
   const box = $("selectedPeople");
   const count = state.selectedPeople.length;
   $("peopleButton").textContent = count ? `People (${count})` : "People";
   $("peopleButton").classList.toggle("active-filter", count > 0);
   const parts = [];
+  if (state.imageQuery) {
+    parts.push(`<button class="chip person-chip image-chip" type="button" data-image-query="1" title="Stop searching by this image">
+      <img src="${state.imageQuery.url}" alt=""><span>${escapeHtml(state.imageQuery.label)}</span> ×</button>`);
+  }
   if (count > 1) {
     parts.push(`<span class="chips-label mono">${state.peopleMode === "all" ? "ALL OF" : "ANY OF"}</span>`);
   }
@@ -446,7 +466,11 @@ function renderSelectedPeople() {
   box.innerHTML = parts.join("");
   box.querySelectorAll(".person-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
-      if (chip.dataset.untagged) state.untaggedOnly = false;
+      if (chip.dataset.imageQuery) {
+        setImageQuery(null);
+        state.similarTo = null;
+        $("similarBanner").classList.add("hidden");
+      } else if (chip.dataset.untagged) state.untaggedOnly = false;
       else if (chip.dataset.near) state.near = null;
       else {
         state.selectedPeople = state.selectedPeople.filter(
@@ -500,6 +524,7 @@ async function search(page = 1, { keepPanel = false } = {}) {
   if (!keepPanel) togglePeoplePanel(false);
   state.page = page;
   state.similarTo = null;
+  clearImageQuery();
   $("similarBanner").classList.add("hidden");
   $("photoGrid").innerHTML = skeletonGrid();
   const query = $("searchInput").value.trim();
@@ -537,6 +562,11 @@ async function showSimilar(imageId, filename) {
   try {
     const body = await request(`/images/${imageId}/similar?limit=48`);
     state.similarTo = { image_id: imageId, filename };
+    setImageQuery({
+      url: `${API}/images/${imageId}/thumbnail?size=grid&format=webp`,
+      label: `like ${filename || "this photo"}`,
+    });
+    renderSelectedPeople();
     $("similarText").textContent = `Photos that look like ${filename || "the selected photo"}.`;
     $("similarBanner").classList.remove("hidden");
     renderPhotos({ results: body.results, total: body.results.length, page: 1, per_page: state.perPage });
@@ -570,8 +600,9 @@ function renderPhotos(result) {
   } else {
     const offset = (result.page - 1) * result.per_page;
     grid.innerHTML = result.results.map((photo, i) => `
-      <button class="photo" data-image-id="${photo.image_id}" data-filename="${escapeHtml(photo.filename || "")}" aria-label="Open ${escapeHtml(photo.filename || "photo")}">
+      <button class="photo ${state.selection.has(photo.image_id) ? "selected" : ""}" data-image-id="${photo.image_id}" data-index="${i}" data-filename="${escapeHtml(photo.filename || "")}" aria-label="Open ${escapeHtml(photo.filename || "photo")}">
         <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
+        <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
         <span class="frame-no mono">${String(offset + i + 1).padStart(3, "0")}</span>
         <span class="photo-meta mono">
           <span>${escapeHtml(formatDate(photo.taken_at))}</span>
@@ -582,8 +613,11 @@ function renderPhotos(result) {
       </button>
     `).join("");
     grid.querySelectorAll(".photo").forEach((button) => {
-      button.addEventListener("click", () =>
-        openPhoto(Number(button.dataset.imageId), button.dataset.filename));
+      button.addEventListener("click", (event) => {
+        if (handleSelectClick(event, button, "photos",
+            (i) => state.results[i]?.image_id)) return;
+        openPhoto(Number(button.dataset.imageId), button.dataset.filename);
+      });
     });
   }
   const pages = Math.max(1, Math.ceil(result.total / result.per_page));
@@ -591,6 +625,152 @@ function renderPhotos(result) {
   $("prevPage").disabled = result.page <= 1;
   $("nextPage").disabled = result.page >= pages;
   $("pager").classList.toggle("hidden", result.total <= result.per_page);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-select + batch actions
+// ---------------------------------------------------------------------------
+// The selection is a set of image_ids, so it survives page changes; the
+// anchor index only powers Shift-ranges within the currently visible grid.
+
+function handleSelectClick(event, tile, scope, idAt) {
+  const imageId = Number(tile.dataset.imageId);
+  const index = Number(tile.dataset.index);
+  if (event.shiftKey && state.selection.size &&
+      state.selectionScope === scope && state.selectionAnchor >= 0) {
+    for (let i = Math.min(state.selectionAnchor, index);
+         i <= Math.max(state.selectionAnchor, index); i++) {
+      const id = idAt(i);
+      if (id != null) state.selection.add(id);
+    }
+    state.selectionAnchor = index;
+    reflectSelection();
+    return true;
+  }
+  if (event.ctrlKey || event.metaKey || event.target.closest(".select-check")) {
+    if (state.selectionScope !== scope && state.selection.size) {
+      state.selection.clear();  // picks from two different grids never mix
+    }
+    state.selectionScope = scope;
+    if (state.selection.has(imageId)) state.selection.delete(imageId);
+    else state.selection.add(imageId);
+    state.selectionAnchor = index;
+    reflectSelection();
+    return true;
+  }
+  return false;
+}
+
+function reflectSelection() {
+  state.trashArmed = false;
+  document.querySelectorAll(".photo[data-image-id]").forEach((tile) => {
+    tile.classList.toggle("selected",
+      state.selection.has(Number(tile.dataset.imageId)));
+  });
+  const n = state.selection.size;
+  $("selectionBar").classList.toggle("hidden", n === 0);
+  $("selectionCount").textContent =
+    `${n} SELECTED${state.selectionScope === "album" ? " · IN ALBUM" : ""}`;
+  $("selTrash").textContent = n === 1 ? "Trash" : `Trash ${n}`;
+  $("selRemoveAlbum").classList.toggle("hidden",
+    !(state.selectionScope === "album" && state.currentAlbum));
+  if (n === 0) $("selAlbumPanel").classList.add("hidden");
+}
+
+function clearSelection() {
+  state.selection.clear();
+  state.selectionAnchor = -1;
+  reflectSelection();
+}
+
+function toggleSelectionAlbumPanel(show) {
+  const panel = $("selAlbumPanel");
+  const wanted = show ?? panel.classList.contains("hidden");
+  panel.classList.toggle("hidden", !wanted);
+  $("selAlbumBtn").setAttribute("aria-expanded", String(wanted));
+  if (!wanted) return;
+  const list = $("selAlbumList");
+  list.innerHTML = state.albums.length
+    ? state.albums.map((album) => `
+        <button class="picker-row" type="button" data-album-id="${album.album_id}">
+          <span class="picker-name">${escapeHtml(album.name)}</span>
+          <span class="picker-count mono">${album.photo_count}</span>
+        </button>`).join("")
+    : '<div class="empty slim-empty">No albums yet — name one below.</div>';
+  list.querySelectorAll(".picker-row").forEach((row) => {
+    row.addEventListener("click", () =>
+      batchAddToAlbum(Number(row.dataset.albumId)));
+  });
+}
+
+async function batchAddToAlbum(albumId) {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  try {
+    const body = await request(`/albums/${albumId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ image_ids: ids }),
+    });
+    await loadAlbums();
+    toggleSelectionAlbumPanel(false);
+    $("selAlbumBtn").textContent = `Added ${body.added} ✓`;
+    setTimeout(() => { $("selAlbumBtn").textContent = "Add to album"; }, 1600);
+    clearSelection();
+    if (state.currentAlbum?.album_id === albumId
+        && !$("albumDetail").classList.contains("hidden")) {
+      openAlbum(albumId);
+    }
+  } catch (error) {
+    showError(`Could not add the photos: ${error.message}`);
+  }
+}
+
+async function batchRemoveFromAlbum() {
+  const album = state.currentAlbum;
+  const ids = [...state.selection];
+  if (!album || !ids.length) return;
+  try {
+    await request(`/albums/${album.album_id}/items/remove`, {
+      method: "POST",
+      body: JSON.stringify({ image_ids: ids }),
+    });
+    clearSelection();
+    openAlbum(album.album_id);
+  } catch (error) {
+    showError(`Could not remove the photos: ${error.message}`);
+  }
+}
+
+async function batchTrash() {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  const button = $("selTrash");
+  if (!state.trashArmed) {
+    state.trashArmed = true;
+    button.textContent = `Really trash ${ids.length}? → Recycle Bin`;
+    return;
+  }
+  button.disabled = true;
+  startLoad();
+  try {
+    const body = await request("/images/trash", {
+      method: "POST",
+      body: JSON.stringify({ image_ids: ids }),
+    });
+    if (body.failed?.length) {
+      showError(`${body.failed.length} photo(s) could not be trashed — they stay in the library.`);
+    }
+    const fromAlbum = state.selectionScope === "album" && state.currentAlbum;
+    clearSelection();
+    await Promise.all([loadStats(), loadPeople(), loadTimeline()]);
+    if (fromAlbum) openAlbum(state.currentAlbum.album_id);
+    else if (state.view === "photos") search(state.page);
+  } catch (error) {
+    showError(`Trash failed: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    endLoad();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +826,7 @@ async function openPhoto(imageId, filename = "") {
   $("albumPickPanel").classList.add("hidden");
   $("modalAlbumBtn").textContent = "Add to album";
   $("photoModal").classList.remove("hidden");
+  resetZoom();
   $("modalImage").src = `${API}/images/${imageId}`;
   $("modalName").textContent = filename || "Loading…";
   $("modalMeta").textContent = "";
@@ -683,14 +864,18 @@ function renderExif(details) {
   add("file", details.file_size ? formatBytes(details.file_size) : "");
   add("folder", details.folder);
   add("place", details.place);
-  add("text", details.ocr_text
-    ? details.ocr_text.replaceAll("\n", " · ").slice(0, 300) : "");
   $("modalDetailsBtn").classList.toggle("hidden",
-    !rows.length && details.lat == null);
+    !rows.length && !details.ocr_text && details.lat == null);
   const hasGps = details.lat != null && details.lon != null;
+  const textBlock = details.ocr_text
+    ? `<div class="exif-row text-row"><span class="exif-key mono">TEXT</span>
+        <span class="exif-val">${escapeHtml(details.ocr_text.replaceAll("\n", " · ").slice(0, 300))}</span>
+        <button id="copyTextBtn" class="btn slim-btn copy-text" type="button"
+          title="Copy every word found in this photo">Copy text</button></div>`
+    : "";
   $("modalExif").innerHTML = rows.map(([k, v]) =>
     `<div class="exif-row"><span class="exif-key mono">${escapeHtml(k.toUpperCase())}</span><span class="exif-val">${escapeHtml(v)}</span></div>`
-  ).join("") + (hasGps
+  ).join("") + textBlock + (hasGps
     ? `<div class="exif-row"><span class="exif-key mono">LOCATION</span>
         <button class="exif-near" type="button" id="exifNear">${details.lat.toFixed(5)}, ${details.lon.toFixed(5)} · photos near here</button></div>`
     : "");
@@ -702,6 +887,36 @@ function renderExif(details) {
       renderSelectedPeople();
       search(1);
     });
+  }
+  if (details.ocr_text) {
+    $("copyTextBtn").addEventListener("click", () =>
+      copyImageText(details.image_id, $("copyTextBtn")));
+  }
+}
+
+async function copyImageText(imageId, button) {
+  try {
+    const body = await request(`/images/${imageId}/text`);
+    const text = body.text || "";
+    if (!text) {
+      button.textContent = "No text stored";
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API can be refused; fall back to the selection trick.
+      const scratch = document.createElement("textarea");
+      scratch.value = text;
+      document.body.appendChild(scratch);
+      scratch.select();
+      document.execCommand("copy");
+      scratch.remove();
+    }
+    button.textContent = "Copied ✓";
+    setTimeout(() => { button.textContent = "Copy text"; }, 1500);
+  } catch (error) {
+    showError(`Could not copy the text: ${error.message}`);
   }
 }
 
@@ -749,9 +964,81 @@ function renderModalFaces(details) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Viewer zoom + pan
+// ---------------------------------------------------------------------------
+// A plain CSS transform on the image: translate then scale about the centre.
+// For the point under the cursor to stay put when the scale changes from s
+// to s', the offset moves to x' = c - (c - x) * s'/s.
+
+const zoom = { scale: 1, x: 0, y: 0, dragging: false, sx: 0, sy: 0 };
+
+function applyZoom() {
+  const img = $("modalImage");
+  img.style.transform = zoom.scale === 1
+    ? "" : `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`;
+  img.classList.toggle("zoomed", zoom.scale > 1);
+}
+
+function resetZoom() {
+  zoom.scale = 1;
+  zoom.x = 0;
+  zoom.y = 0;
+  zoom.dragging = false;
+  applyZoom();
+}
+
+function zoomTowards(clientX, clientY, factor) {
+  const rect = $("modalStage").getBoundingClientRect();
+  const cx = clientX - rect.left - rect.width / 2;
+  const cy = clientY - rect.top - rect.height / 2;
+  const next = Math.min(8, Math.max(1, zoom.scale * factor));
+  const applied = next / zoom.scale;
+  zoom.x = cx - (cx - zoom.x) * applied;
+  zoom.y = cy - (cy - zoom.y) * applied;
+  zoom.scale = next;
+  if (next === 1) { zoom.x = 0; zoom.y = 0; }
+  applyZoom();
+}
+
+function initZoom() {
+  const stage = $("modalStage");
+  const img = $("modalImage");
+  stage.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    zoomTowards(event.clientX, event.clientY,
+      Math.exp(-event.deltaY * 0.0016));
+  }, { passive: false });
+  stage.addEventListener("dblclick", (event) => {
+    if (zoom.scale > 1) resetZoom();
+    else zoomTowards(event.clientX, event.clientY, 2.5);
+  });
+  img.addEventListener("pointerdown", (event) => {
+    if (zoom.scale === 1) return;
+    zoom.dragging = true;
+    zoom.sx = event.clientX - zoom.x;
+    zoom.sy = event.clientY - zoom.y;
+    img.classList.add("dragging");
+    img.setPointerCapture(event.pointerId);
+  });
+  img.addEventListener("pointermove", (event) => {
+    if (!zoom.dragging) return;
+    zoom.x = event.clientX - zoom.sx;
+    zoom.y = event.clientY - zoom.sy;
+    applyZoom();
+  });
+  const stopDrag = () => {
+    zoom.dragging = false;
+    img.classList.remove("dragging");
+  };
+  img.addEventListener("pointerup", stopDrag);
+  img.addEventListener("pointercancel", stopDrag);
+}
+
 function closePhoto() {
   $("photoModal").classList.add("hidden");
   $("modalImage").removeAttribute("src");
+  resetZoom();
 }
 
 function updateModalNav() {
@@ -1401,20 +1688,54 @@ async function loadDupes() {
       list.innerHTML = '<div class="empty slim-empty">No duplicates found — your library is tidy.</div>';
       return;
     }
-    list.innerHTML = groups.map((group) => {
-      const shown = group.image_ids.slice(0, 8);
-      const extra = group.image_ids.length - shown.length;
-      return `<div class="dupe-group">
+    const keeperOf = (group) => {
+      const items = group.items
+        || group.image_ids.map((id) => ({ image_id: id, file_size: 0 }));
+      return items.reduce((a, b) => (b.file_size > a.file_size ? b : a),
+                          items[0]).image_id;
+    };
+    list.innerHTML = groups.map((group, gi) => {
+      const items = group.items
+        || group.image_ids.map((id) => ({ image_id: id, file_size: 0 }));
+      const keeper = keeperOf(group);
+      const shown = items.slice(0, 8);
+      const extra = items.length - shown.length;
+      return `<div class="dupe-group" data-group="${gi}">
         <span class="dupe-kind mono ${group.kind === "identical" ? "hard" : ""}">${group.kind.toUpperCase()}</span>
         <div class="dupe-thumbs">
-          ${shown.map((id) => `<button class="dupe-thumb" type="button" data-image-id="${id}">
-            <img loading="lazy" src="${API}/images/${id}/thumbnail?size=grid&format=webp" alt=""></button>`).join("")}
+          ${shown.map((item) => `<button class="dupe-thumb ${item.image_id === keeper ? "keeper" : ""}" type="button" data-image-id="${item.image_id}"
+              title="${formatBytes(item.file_size)}${item.image_id === keeper ? " · largest, will be kept" : ""}">
+            <img loading="lazy" src="${API}/images/${item.image_id}/thumbnail?size=grid&format=webp" alt=""></button>`).join("")}
           ${extra > 0 ? `<span class="dupe-more mono">+${extra}</span>` : ""}
         </div>
+        <button class="btn slim-btn dupe-keep" type="button">Keep largest · trash ${items.length - 1}</button>
       </div>`;
     }).join("");
     list.querySelectorAll(".dupe-thumb").forEach((thumb) => {
       thumb.addEventListener("click", () => openPhoto(Number(thumb.dataset.imageId)));
+    });
+    list.querySelectorAll(".dupe-keep").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const group = groups[Number(button.closest(".dupe-group").dataset.group)];
+        const losers = group.image_ids.filter((id) => id !== keeperOf(group));
+        if (button.dataset.armed !== "1") {
+          button.dataset.armed = "1";
+          button.textContent = `Really trash ${losers.length}? → Recycle Bin`;
+          return;
+        }
+        button.disabled = true;
+        try {
+          await request("/images/trash", {
+            method: "POST",
+            body: JSON.stringify({ image_ids: losers }),
+          });
+          await Promise.all([loadStats(), loadPeople()]);
+          loadDupes();
+        } catch (error) {
+          showError(`Could not trash the duplicates: ${error.message}`);
+          button.disabled = false;
+        }
+      });
     });
   } catch (error) {
     list.innerHTML = "";
@@ -1520,15 +1841,18 @@ function renderAlbumPhotos(detail) {
     grid.innerHTML = '<div class="empty">Empty so far. Add photos from the suggestions above, or from any photo\'s "Add to album" button.</div>';
     return;
   }
-  grid.innerHTML = detail.images.map((photo) => `
-    <div class="photo album-photo" data-image-id="${photo.image_id}">
+  grid.innerHTML = detail.images.map((photo, i) => `
+    <div class="photo album-photo ${state.selection.has(photo.image_id) ? "selected" : ""}" data-image-id="${photo.image_id}" data-index="${i}">
       <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
+      <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
       <button class="album-remove mono" type="button" data-remove="${photo.image_id}" title="Remove from album">×</button>
     </div>
   `).join("");
   grid.querySelectorAll(".album-photo").forEach((tile) => {
     tile.addEventListener("click", (event) => {
       if (event.target.closest(".album-remove")) return;
+      if (handleSelectClick(event, tile, "album",
+          (i) => state.currentAlbum?.images?.[i]?.image_id)) return;
       openPhoto(Number(tile.dataset.imageId));
     });
   });
@@ -1685,6 +2009,12 @@ async function searchByImageFile(file) {
       throw new Error(body.detail || `Search failed (${response.status})`);
     }
     state.similarTo = { pasted: true };
+    setImageQuery({
+      url: URL.createObjectURL(file),
+      label: "pasted image",
+      blob: true,
+    });
+    renderSelectedPeople();
     $("similarText").textContent = "Results for the image you pasted.";
     $("similarBanner").classList.remove("hidden");
     renderPhotos(body);
@@ -1747,6 +2077,63 @@ async function startOcrScan() {
     loadOcrStatus();
   } catch (error) {
     showError(`Could not scan for text: ${error.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Curation backup (Library tab)
+// ---------------------------------------------------------------------------
+
+async function exportCuration() {
+  clearError();
+  const button = $("curationExport");
+  button.disabled = true;
+  try {
+    const data = await request("/admin/curation");
+    const blob = new Blob([JSON.stringify(data, null, 2)],
+                          { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `photolib-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+    $("curationStatus").innerHTML =
+      `<div class="model-line"><span>exported</span>` +
+      `<span>${data.people.length} people · ${data.albums.length} albums</span></div>`;
+  } catch (error) {
+    showError(`Backup failed: ${error.message}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function importCuration(file) {
+  clearError();
+  startLoad();
+  try {
+    const data = JSON.parse(await file.text());
+    const report = await request("/admin/curation", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    const bits = [
+      `${report.people_restored} people restored`,
+      `${report.albums_created} albums created`,
+      `${report.album_items_added} photos re-filed`,
+    ];
+    if (report.people_skipped) {
+      bits.push(`${report.people_skipped} skipped — no clear match`);
+    }
+    $("curationStatus").innerHTML =
+      `<div class="model-line"><span>restored</span><span>${bits.join(" · ")}</span></div>`;
+    await Promise.all([loadPeople(), loadAlbums(), loadStats()]);
+  } catch (error) {
+    showError(`Restore failed: ${error.message}`);
+  } finally {
+    endLoad();
+    $("curationFile").value = "";
   }
 }
 
@@ -1928,6 +2315,34 @@ async function init() {
   $("rescanAllButton").addEventListener("click", rescanAll);
   $("findDupes").addEventListener("click", loadDupes);
 
+  $("curationExport").addEventListener("click", exportCuration);
+  $("curationImportBtn").addEventListener("click", () => $("curationFile").click());
+  $("curationFile").addEventListener("change", () => {
+    const file = $("curationFile").files?.[0];
+    if (file) importCuration(file);
+  });
+
+  $("selClear").addEventListener("click", clearSelection);
+  $("selTrash").addEventListener("click", batchTrash);
+  $("selRemoveAlbum").addEventListener("click", batchRemoveFromAlbum);
+  $("selAlbumBtn").addEventListener("click", () => toggleSelectionAlbumPanel());
+  $("selAlbumCreate").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = $("selAlbumName").value.trim();
+    if (!name) return;
+    try {
+      const album = await createAlbum(name);
+      $("selAlbumName").value = "";
+      await batchAddToAlbum(album.album_id);
+    } catch (error) {
+      showError(`Could not create the album: ${error.message}`);
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest("#selectionBar")) toggleSelectionAlbumPanel(false);
+  });
+  initZoom();
+
   document.addEventListener("keydown", (event) => {
     const photoOpen = !$("photoModal").classList.contains("hidden");
     if (event.key === "Escape") {
@@ -1935,6 +2350,9 @@ async function init() {
       // from a person still leaves the person open.
       if (photoOpen) closePhoto();
       else if (!$("personModal").classList.contains("hidden")) closePerson();
+      else if (!$("selAlbumPanel").classList.contains("hidden")) {
+        toggleSelectionAlbumPanel(false);
+      } else if (state.selection.size) clearSelection();
       else togglePeoplePanel(false);
       return;
     }
