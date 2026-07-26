@@ -22,7 +22,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .db import Library
+from .db import Library, OCR
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,8 @@ class LibraryIndex:
         self._library = library
         self._lock = threading.RLock()
         self._version: Optional[int] = None
+        self._ocr_handle = None
+        self._ocr_version: Optional[int] = None
         self._built = False
 
         self.image_ids = np.zeros(0, dtype=np.int64)
@@ -73,6 +75,8 @@ class LibraryIndex:
         self.face_count = np.zeros(0, dtype=np.int32)
         self.folders: List[str] = []
         self.cameras: List[str] = []
+        self.ocr_text: List[str] = []          # lowercase; "" = none/unscanned
+        self.ocr_scanned = np.zeros(0, dtype=bool)
         self._row_of_id: Dict[int, int] = {}
         self._rows_by_person: Dict[int, np.ndarray] = {}
         self._person_counts: Dict[int, int] = {}
@@ -85,9 +89,24 @@ class LibraryIndex:
                 version = self._library.images.version
             except Exception:
                 version = None
-            if self._built and version == self._version:
+            if self._built and version == self._version and self._ocr_fresh():
                 return
             self._rebuild(version)
+
+    def _ocr_fresh(self) -> bool:
+        """Is the cached OCR text still current?
+
+        Uses the table handle captured at rebuild time — ensure_fresh runs on
+        every row lookup, so this must never touch the filesystem the way
+        ``table_names()``/``open_table()`` do. A brand-new OCR table is
+        picked up via ``invalidate()``, which every writer already calls.
+        """
+        if self._ocr_handle is None:
+            return True
+        try:
+            return self._ocr_handle.version == self._ocr_version
+        except Exception:
+            return False
 
     def invalidate(self) -> None:
         with self._lock:
@@ -122,6 +141,8 @@ class LibraryIndex:
                                 for k, v in by_person.items()}
         self._person_counts = {k: len(v) for k, v in by_person.items()}
 
+        self._load_ocr(n)
+
         # Undated photos sort last rather than to 1970, which is where a
         # missing EXIF timestamp used to put them.
         keys = np.where(np.isnan(self.taken_ts), -np.inf, self.taken_ts)
@@ -129,6 +150,45 @@ class LibraryIndex:
 
         self._version = version
         self._built = True
+
+    def _load_ocr(self, n: int) -> None:
+        """Attach extracted text to image rows. Absent table = no text."""
+        self.ocr_text = [""] * n
+        self.ocr_scanned = np.zeros(n, dtype=bool)
+        self._ocr_handle = None
+        self._ocr_version = None
+        try:
+            if not self._library.has_ocr():
+                return
+            self._ocr_handle = self._library.ocr
+            self._ocr_version = self._ocr_handle.version
+            table = self._ocr_handle.to_lance().to_table(
+                columns=["image_id", "text"])
+        except Exception as exc:
+            logger.debug("OCR text not loaded: %s", exc)
+            return
+        for image_id, text in zip(table["image_id"].to_pylist(),
+                                  table["text"].to_pylist()):
+            row = self._row_of_id.get(int(image_id))
+            if row is None:
+                continue
+            self.ocr_scanned[row] = True
+            if text:
+                self.ocr_text[row] = str(text).lower()
+
+    def text_match(self, tokens: Sequence[str],
+                   allowed: Optional[np.ndarray] = None) -> np.ndarray:
+        """Rows whose extracted text contains every token (case-insensitive)."""
+        self.ensure_fresh()
+        if not tokens:
+            return np.zeros(0, dtype=np.int64)
+        wanted = [t.lower() for t in tokens if t]
+        rows = (range(len(self.ocr_text)) if allowed is None
+                else (int(r) for r in allowed))
+        hits = [row for row in rows
+                if self.ocr_text[row]
+                and all(t in self.ocr_text[row] for t in wanted)]
+        return np.asarray(hits, dtype=np.int64)
 
     # -- accessors -------------------------------------------------------
     @property
@@ -143,6 +203,15 @@ class LibraryIndex:
     def row_of(self, image_id: int) -> Optional[int]:
         self.ensure_fresh()
         return self._row_of_id.get(int(image_id))
+
+    def row_map(self) -> Dict[int, int]:
+        """image_id -> row, freshness checked once — for per-hit loops.
+
+        Calling ``row_of`` inside a 1000-hit loop pays the freshness check
+        1000 times; snapshotting the mapping pays it once.
+        """
+        self.ensure_fresh()
+        return self._row_of_id
 
     def ids_of(self, rows: np.ndarray) -> List[int]:
         return [int(v) for v in self.image_ids[rows]]

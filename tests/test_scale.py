@@ -34,6 +34,8 @@ def big_index() -> LibraryIndex:
     # and the arrays below stand in for a real 200k-row table.
     index._library = SimpleNamespace(images=SimpleNamespace(version=1))
     index._version = 1
+    index._ocr_handle = None    # no OCR table on the stub library
+    index._ocr_version = None
     index._built = True
 
     index.image_ids = np.arange(N, dtype=np.int64)

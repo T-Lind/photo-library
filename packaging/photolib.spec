@@ -38,6 +38,15 @@ else:
 binaries = collect_dynamic_libs("onnxruntime") + collect_dynamic_libs("lance")
 datas += collect_data_files("onnxruntime")
 
+# RapidOCR keeps its detection/recognition models and config inside the
+# package; collect them so text-in-photos search works when frozen. The
+# try/except keeps the spec usable in a build without OCR.
+try:
+    datas += collect_data_files("rapidocr_onnxruntime")
+except Exception as exc:
+    print(f"WARNING: rapidocr not bundled ({exc}); "
+          "text-in-photos search will be unavailable", file=sys.stderr)
+
 hiddenimports = [
     "uvicorn.logging",
     "uvicorn.loops.auto",
@@ -48,6 +57,11 @@ hiddenimports = [
     "photolib.faces.insight",
     "pillow_heif",
     "tokenizers",
+    "rapidocr_onnxruntime",
+    # Native Windows OCR projection modules (loaded dynamically).
+    "winsdk.windows.media.ocr",
+    "winsdk.windows.graphics.imaging",
+    "winsdk.windows.storage.streams",
 ]
 
 # Nothing here uses PyTorch — the ONNX backend is the entire point. Excluding

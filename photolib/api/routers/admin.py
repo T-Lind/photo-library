@@ -168,6 +168,31 @@ def fetch_models(service: PhotoService = Depends(get_service)):
     return JobOut(**job.to_dict())
 
 
+@router.post("/admin/ocr", response_model=JobOut)
+def start_ocr(service: PhotoService = Depends(get_service)):
+    """Extract text from every not-yet-scanned photo, as a background job.
+
+    Incremental: photos already scanned are skipped, so cancelling and
+    re-running resumes where it stopped. Nothing is re-embedded.
+    """
+    try:
+        job = service.start_ocr_backfill_job()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise translate_errors(exc)
+    return JobOut(**job.to_dict())
+
+
+@router.get("/admin/ocr")
+def ocr_status(service: PhotoService = Depends(get_service)):
+    """Text-recognition availability and coverage."""
+    try:
+        return service.ocr_status()
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
 @router.get("/admin/duplicates")
 def duplicates(max_distance: int = Query(6, ge=0, le=20),
                limit: int = Query(200, ge=1, le=1000),

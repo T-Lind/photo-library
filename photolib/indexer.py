@@ -36,6 +36,7 @@ from .faces import FaceBackend, build_face_backend
 from .faces.cluster import FaceAssigner, FaceObservation
 from .hashing import content_hash, phash
 from .imageio import iter_image_files, load_rgb_array, open_image
+from .ocr import build_ocr
 from .thumbnails import ThumbnailCache
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,11 @@ class Indexer:
         self.faces = face_backend or build_face_backend(self.settings)
         self.thumbs = thumbnails or ThumbnailCache(self.settings.thumbnail_cache_dir)
         self.progress = progress or (lambda *a, **k: None)
+        try:
+            self.ocr = build_ocr(self.settings)
+        except Exception as exc:  # a broken OCR install must not stop indexing
+            logger.warning("OCR disabled for this run: %s", exc)
+            self.ocr = None
 
     # -- public API ------------------------------------------------------
     def meta(self) -> LibraryMeta:
@@ -203,6 +209,8 @@ class Indexer:
             ids = ", ".join(str(int(i)) for i in chunk)
             self.library.images.delete(f"image_id IN ({ids})")
             self.library.faces.delete(f"image_id IN ({ids})")
+            if self.library.has_ocr():
+                self.library.ocr.delete(f"image_id IN ({ids})")
         for image_id in image_ids:
             try:
                 self.thumbs.purge_image(int(image_id))
@@ -240,6 +248,9 @@ class Indexer:
         workers = max(1, min(self.settings.worker_count, 16))
         image_rows: List[dict] = []
         face_rows: List[dict] = []
+        ocr_rows: List[dict] = []
+        if self.ocr is not None:
+            self.library.ensure_ocr()
         done = 0
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -288,6 +299,19 @@ class Indexer:
                             image_id, prep, vector, people_ids, len(observations)))
                         face_rows.extend(self._face_row(o) for o in observations)
 
+                        if self.ocr is not None:
+                            # Reuse the already-decoded buffer: OCR is one
+                            # more consumer of the single decode.
+                            try:
+                                text = self.ocr.extract(prep.array, prep.path)
+                            except Exception as exc:
+                                logger.debug("OCR failed for %s: %s", prep.path, exc)
+                                text = ""
+                            ocr_rows.append({
+                                "image_id": image_id, "text": text,
+                                "engine": self.ocr.name, "updated_at": now_ms(),
+                            })
+
                     if self.settings.pregenerate_thumbnails:
                         pool.map(self._pregenerate,
                                  [(r["image_id"], r["path"]) for r in image_rows[-len(good):]])
@@ -302,13 +326,14 @@ class Indexer:
                                "faces": stats.faces_detected})
 
                 if len(image_rows) >= self.settings.write_batch_size:
-                    self._write(image_rows, face_rows, img_schema, face_schema)
+                    self._write(image_rows, face_rows, img_schema, face_schema,
+                                ocr_rows)
                     stats.added += len(image_rows)
-                    image_rows, face_rows = [], []
+                    image_rows, face_rows, ocr_rows = [], [], []
                     assigner.flush()
 
         if image_rows:
-            self._write(image_rows, face_rows, img_schema, face_schema)
+            self._write(image_rows, face_rows, img_schema, face_schema, ocr_rows)
             stats.added += len(image_rows)
         assigner.flush()
         stats.people_created = max(0, len(assigner.people) - people_before)
@@ -443,11 +468,16 @@ class Indexer:
         self.thumbs.pregenerate(image_id, path)
 
     def _write(self, image_rows: List[dict], face_rows: List[dict],
-               img_schema: pa.Schema, face_schema: pa.Schema) -> None:
+               img_schema: pa.Schema, face_schema: pa.Schema,
+               ocr_rows: Optional[List[dict]] = None) -> None:
+        from .db import OCR_SCHEMA
+
         if image_rows:
             self.library.images.add(pa.Table.from_pylist(image_rows, schema=img_schema))
         if face_rows:
             self.library.faces.add(pa.Table.from_pylist(face_rows, schema=face_schema))
+        if ocr_rows:
+            self.library.ocr.add(pa.Table.from_pylist(ocr_rows, schema=OCR_SCHEMA))
 
 
 def _scale_bbox(bbox: Tuple[int, int, int, int], scale: float

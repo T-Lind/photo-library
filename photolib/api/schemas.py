@@ -52,6 +52,8 @@ class ImageSummary(BaseModel):
     width: int = 0
     height: int = 0
     score: Optional[float] = None
+    # True when the query matched text found in the image (OCR).
+    text_match: Optional[bool] = None
 
 
 class SearchResponse(BaseModel):
@@ -123,6 +125,18 @@ class IndexRequest(BaseModel):
 
 class RootRequest(BaseModel):
     folder: str = Field(..., description="Absolute path to a photo folder")
+
+
+class AlbumCreateRequest(BaseModel):
+    name: str = Field(..., max_length=200)
+
+
+class AlbumRenameRequest(BaseModel):
+    name: str = Field(..., max_length=200)
+
+
+class AlbumItemsRequest(BaseModel):
+    image_ids: List[int] = Field(..., min_length=1)
 
 
 class ReclusterRequest(BaseModel):
