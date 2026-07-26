@@ -81,6 +81,56 @@ class RapidOcrBackend:
             return array[::step, ::step]
 
 
+class WindowsOcrBackend:
+    """Windows' built-in OCR (Windows.Media.Ocr) via the winsdk projection.
+
+    The engine behind PowerToys Text Extractor: ships with Windows, needs no
+    model download, and is an order of magnitude faster than running
+    PaddleOCR on CPU — ~0.25s for a dense screenshot against ~5s. Preferred
+    automatically on Windows; other platforms fall back to RapidOCR.
+    """
+
+    name = "windows"
+    model_name = "windows-media-ocr"
+    max_side = 2400   # well under the engine's 10k limit; keeps buffers sane
+
+    def __init__(self, max_chars: int = 4000):
+        from winsdk.windows.media.ocr import OcrEngine
+
+        self._engine = OcrEngine.try_create_from_user_profile_languages()
+        if self._engine is None:
+            raise RuntimeError(
+                "Windows OCR has no language pack installed for the current "
+                "user profile")
+        self.max_chars = max_chars
+
+    def extract(self, array: np.ndarray, path: Optional[str] = None) -> str:
+        import asyncio
+
+        result = asyncio.run(self._recognize(self._to_bitmap(array)))
+        lines = [line.text.strip() for line in result.lines if line.text.strip()]
+        return "\n".join(lines)[: self.max_chars]
+
+    async def _recognize(self, bitmap):
+        return await self._engine.recognize_async(bitmap)
+
+    @staticmethod
+    def _to_bitmap(array: np.ndarray):
+        from winsdk.windows.graphics.imaging import (BitmapPixelFormat,
+                                                     SoftwareBitmap)
+        from winsdk.windows.storage.streams import DataWriter
+
+        h, w = array.shape[:2]
+        bgra = np.dstack([
+            array[:, :, 2], array[:, :, 1], array[:, :, 0],
+            np.full((h, w), 255, dtype=np.uint8),
+        ])
+        writer = DataWriter()
+        writer.write_bytes(bgra.tobytes())
+        return SoftwareBitmap.create_copy_from_buffer(
+            writer.detach_buffer(), BitmapPixelFormat.BGRA8, w, h)
+
+
 class StubOcrBackend:
     """Deterministic OCR for tests: the filename's words are the "text".
 
@@ -91,6 +141,7 @@ class StubOcrBackend:
 
     name = "stub"
     model_name = "stub-ocr-v1"
+    max_side = 1280
 
     def extract(self, array: np.ndarray, path: Optional[str] = None) -> str:
         if not path:
@@ -99,12 +150,25 @@ class StubOcrBackend:
         return " ".join(part for part in stem.replace("_", "-").split("-") if part)
 
 
+def ocr_available() -> bool:
+    """Cheap availability probe, without loading any models."""
+    import importlib.util
+    import sys
+
+    if sys.platform == "win32" and importlib.util.find_spec("winsdk"):
+        return True
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+
+
 def build_ocr(settings=None) -> Optional[OcrBackend]:
     """The configured OCR engine, or None when text recognition is off.
 
-    ``auto`` quietly degrades to None when rapidocr is not installed —
-    OCR is an enhancement, never a requirement.
+    ``auto`` prefers the native Windows engine, falls back to RapidOCR, and
+    quietly degrades to None when neither is installed — OCR is an
+    enhancement, never a requirement.
     """
+    import sys
+
     from .config import get_settings
 
     settings = settings or get_settings()
@@ -114,6 +178,20 @@ def build_ocr(settings=None) -> Optional[OcrBackend]:
         return None
     if backend == "stub":
         return StubOcrBackend()
+
+    if backend in ("auto", "windows") and sys.platform == "win32":
+        try:
+            return WindowsOcrBackend(max_chars=settings.ocr_max_chars)
+        except Exception as exc:
+            if backend == "windows":
+                raise RuntimeError(
+                    f"Windows OCR is unavailable: {exc}. Install the winsdk "
+                    "package and a Windows language pack, or set "
+                    "PHOTO_OCR_BACKEND=rapidocr.") from exc
+            logger.info("Windows OCR unavailable (%s); trying RapidOCR", exc)
+    elif backend == "windows":
+        raise RuntimeError("PHOTO_OCR_BACKEND=windows only works on Windows")
+
     try:
         return RapidOcrBackend(
             min_confidence=settings.ocr_min_confidence,

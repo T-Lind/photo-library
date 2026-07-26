@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # when the package is installed and silently skips OCR otherwise, so a
     # minimal install keeps working. Extracted text is stored once per image
     # and searched exactly, ahead of the semantic ranking.
-    ocr_backend: Literal["auto", "rapidocr", "stub", "off"] = "auto"
+    ocr_backend: Literal["auto", "windows", "rapidocr", "stub", "off"] = "auto"
     ocr_min_confidence: float = Field(0.5, ge=0.0, le=1.0)
     ocr_max_chars: int = Field(4000, ge=100, le=100_000)
     ocr_max_side: int = Field(1280, ge=320, le=4096,

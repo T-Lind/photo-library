@@ -4,7 +4,9 @@
 onnxruntime~=1.20.0
 tokenizers>=0.20,<0.23
 insightface==1.0.1
-# Text-in-photos search. Ships its ONNX models inside the wheel, so the
-# packaged app stays fully offline.
+# Text-in-photos search. On Windows the native Windows.Media.Ocr engine is
+# used (fast, no model download); RapidOCR is the cross-platform fallback
+# and ships its ONNX models inside the wheel, so both stay fully offline.
+winsdk~=1.0.0b10 ; sys_platform == 'win32'
 rapidocr-onnxruntime~=1.4.4
 pyinstaller~=6.21.0

@@ -80,7 +80,8 @@ def test_backfill_scans_only_missing_images(settings, library, photo_dir,
     from photolib.service import PhotoService
 
     service = PhotoService(settings=settings, library=library)
-    assert service.settings.ocr_backend == "auto"  # resolves to None in CI
+    # Index with OCR explicitly off, as an old build would have.
+    service.settings.ocr_backend = "off"
     indexer = Indexer(library, settings, service.embedder,
                       service.face_backend, service.thumbs)
     indexer.index_directory(photo_dir)

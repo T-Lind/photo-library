@@ -1183,11 +1183,10 @@ class PhotoService:
     # ------------------------------------------------------------------
     def ocr_status(self) -> dict:
         """Coverage and availability of text recognition."""
-        import importlib.util
+        from .ocr import ocr_available
 
         available = self.settings.ocr_backend != "off" and (
-            self.settings.ocr_backend == "stub"
-            or importlib.util.find_spec("rapidocr_onnxruntime") is not None)
+            self.settings.ocr_backend == "stub" or ocr_available())
         scanned = with_text = 0
         if self.ready and self.library.has_ocr():
             scanned = self.library.ocr.count_rows(None)
@@ -1245,7 +1244,8 @@ class PhotoService:
             for i, (image_id, path) in enumerate(todo):
                 text = ""
                 try:
-                    array = load_rgb_array(path, max_side=self.settings.ocr_max_side)
+                    array = load_rgb_array(path, max_side=getattr(
+                        backend, "max_side", self.settings.ocr_max_side))
                     text = backend.extract(array, path)
                 except Exception:
                     # Unreadable file: record an empty scan so the job

@@ -58,6 +58,10 @@ hiddenimports = [
     "pillow_heif",
     "tokenizers",
     "rapidocr_onnxruntime",
+    # Native Windows OCR projection modules (loaded dynamically).
+    "winsdk.windows.media.ocr",
+    "winsdk.windows.graphics.imaging",
+    "winsdk.windows.storage.streams",
 ]
 
 # Nothing here uses PyTorch — the ONNX backend is the entire point. Excluding
