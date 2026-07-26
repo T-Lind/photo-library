@@ -36,6 +36,22 @@ def _send_to_trash(path: str) -> None:
     send2trash(path)
 
 
+def _reveal_in_file_manager(path: str) -> None:
+    """Open the OS file manager with the file selected. Module-level test seam."""
+    import subprocess
+    import sys
+
+    if os.name == "nt":
+        # explorer exits 1 even on success, so no return-code check.
+        subprocess.Popen(
+            ["explorer", f"/select,{path}"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    elif sys.platform == "darwin":  # pragma: no cover - platform specific
+        subprocess.Popen(["open", "-R", path])
+    else:  # pragma: no cover - platform specific
+        subprocess.Popen(["xdg-open", os.path.dirname(path)])
+
+
 class NotFound(LookupError):
     pass
 
@@ -59,6 +75,13 @@ class PhotoService:
         self.settings = settings or get_settings()
         self.settings.ensure_dirs()
         self.library = library or Library(self.settings.db_uri)
+        if self.library.initialised():
+            # Libraries indexed before video support gain the media columns
+            # in place — cheap, idempotent, and no re-index.
+            try:
+                self.library.ensure_media_columns()
+            except Exception as exc:
+                logger.warning("Media column migration failed: %s", exc)
         self.index = LibraryIndex(self.library)
         self.thumbs = ThumbnailCache(self.settings.thumbnail_cache_dir)
         self.jobs = JobManager(self.settings.state_dir)
@@ -880,6 +903,7 @@ class PhotoService:
                 f"person_id = {UNASSIGNED}"),
             "images_with_location": int((~np.isnan(self.index.lat)).sum()),
             "images_with_faces": int((self.index.face_count > 0).sum()),
+            "total_videos": int(self.index.is_video.sum()),
             "images_without_date": int(np.isnan(self.index.taken_ts).sum()),
             "earliest_date": _iso(dated.min()) if dated.size else None,
             "latest_date": _iso(dated.max()) if dated.size else None,
@@ -985,6 +1009,63 @@ class PhotoService:
         self.index.invalidate()
         return {"trashed": trashed, "missing": missing,
                 "removed": len(removable), "failed": failed}
+
+    # ------------------------------------------------------------------
+    # Getting files out (reveal, export copies)
+    # ------------------------------------------------------------------
+    def reveal_image(self, image_id: int) -> dict:
+        """Show the original in the OS file manager (Explorer on Windows)."""
+        path = self.image_path(image_id)
+        if not os.path.exists(path):
+            raise NotFound(f"Indexed file is missing from disk: {path}")
+        _reveal_in_file_manager(path)
+        return {"revealed": path}
+
+    def export_images(self, image_ids: Sequence[int], folder: str) -> dict:
+        """Copy originals into ``folder``. Sources are never moved or altered.
+
+        Name collisions get " (2)"-style suffixes rather than overwriting;
+        a file already missing from disk is counted, not fatal.
+        """
+        self.require_ready()
+        ids = list(dict.fromkeys(int(i) for i in image_ids))
+        dest_dir = Path(folder).expanduser()
+        if not dest_dir.is_dir():
+            raise ValueError(f"Export folder does not exist: {folder}")
+
+        id_list = ", ".join(str(i) for i in ids)
+        rows = (
+            self.library.images.search()
+            .where(f"image_id IN ({id_list})")
+            .select(["image_id", "path"])
+            .limit(len(ids))
+            .to_arrow()
+            .to_pylist()
+        )
+        path_of = {int(r["image_id"]): str(r["path"]) for r in rows}
+
+        import shutil
+
+        copied = missing = 0
+        failed: List[dict] = []
+        for image_id in ids:
+            source = path_of.get(image_id)
+            if source is None or not os.path.exists(source):
+                missing += 1
+                continue
+            target = dest_dir / Path(source).name
+            try:
+                if target.exists() and os.path.samefile(source, target):
+                    # Exporting a photo into its own folder is a no-op,
+                    # not a reason to mint "name (2).jpg".
+                    copied += 1
+                    continue
+                shutil.copy2(source, _collision_free(target))
+                copied += 1
+            except Exception as exc:
+                failed.append({"image_id": image_id, "error": str(exc)})
+        return {"copied": copied, "missing": missing, "failed": failed,
+                "folder": str(dest_dir)}
 
     def _people_in_images(self, image_ids: Sequence[int]) -> List[int]:
         if not image_ids:
@@ -1597,6 +1678,17 @@ class PhotoService:
                         where=where, values_sql={"people_ids": "make_array()"})
 
 
+def _collision_free(target: Path) -> Path:
+    """First free name: photo.jpg, photo (2).jpg, photo (3).jpg, ..."""
+    if not target.exists():
+        return target
+    for n in range(2, 10_000):
+        candidate = target.with_name(f"{target.stem} ({n}){target.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"No free filename for {target}")
+
+
 def _image_dict(row) -> dict:
     people = row.get("people_ids")
     if people is None:
@@ -1613,6 +1705,8 @@ def _image_dict(row) -> dict:
         "face_count": int(row.get("face_count") or 0),
         "width": int(row.get("width") or 0),
         "height": int(row.get("height") or 0),
+        "media_type": row.get("media_type") or "image",
+        "duration_ms": int(row.get("duration_ms") or 0),
     }
 
 

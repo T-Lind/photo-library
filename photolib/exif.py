@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .imageio import HEIF_EXTS, RAW_EXTS, register_heif
+from .imageio import HEIF_EXTS, RAW_EXTS, VIDEO_EXTS, register_heif
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,13 @@ def read_metadata(path) -> PhotoMetadata:
 
     meta = PhotoMetadata()
     try:
-        if suffix in RAW_EXTS:
+        if suffix in VIDEO_EXTS:
+            # Container metadata, not EXIF: capture time comes from the
+            # (UTC) creation_time tag, converted to local wall-clock time.
+            from .imageio import probe_video
+
+            meta = PhotoMetadata(taken_at=probe_video(path).taken_at)
+        elif suffix in RAW_EXTS:
             meta = _from_exifread(path)
         else:
             meta = _from_pillow(path)

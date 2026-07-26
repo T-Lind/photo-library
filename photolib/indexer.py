@@ -84,6 +84,8 @@ class _Prepared:
     lat: Optional[float]
     lon: Optional[float]
     camera: str
+    media_type: str = "image"
+    duration_ms: int = 0
     array: Optional[np.ndarray] = None
     error: Optional[str] = None
 
@@ -141,6 +143,7 @@ class Indexer:
             self.library.create(meta, drop_existing=rebuild)
         else:
             self.library.verify_compatible(meta)
+            self.library.ensure_media_columns()
 
         self.progress("scanning", 0, 0, {"root": str(root)})
         files = list(iter_image_files(root, self.settings.follow_symlinks))
@@ -339,6 +342,8 @@ class Indexer:
         stats.people_created = max(0, len(assigner.people) - people_before)
 
     def _prepare(self, path: Path) -> _Prepared:
+        from .imageio import is_video, probe_video
+
         try:
             st = path.stat()
             meta = read_metadata(path)
@@ -346,6 +351,9 @@ class Indexer:
             with open_image(path, target=(64, 64)) as small:
                 perceptual = phash(small)
             width, height = self._true_size(path, array)
+            video = is_video(path)
+            # Probe results are cached, so this re-read costs nothing.
+            duration = probe_video(path).duration_ms if video else 0
             return _Prepared(
                 path=str(path),
                 filename=path.name,
@@ -360,6 +368,8 @@ class Indexer:
                 lat=meta.lat,
                 lon=meta.lon,
                 camera=meta.camera,
+                media_type="video" if video else "image",
+                duration_ms=duration,
                 array=array,
             )
         except Exception as exc:
@@ -446,6 +456,8 @@ class Indexer:
             "camera": prep.camera,
             "people_ids": [int(p) for p in people_ids],
             "face_count": face_count,
+            "media_type": prep.media_type,
+            "duration_ms": prep.duration_ms,
         }
 
     @staticmethod

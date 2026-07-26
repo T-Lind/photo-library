@@ -15,7 +15,7 @@ from ...config import get_settings
 from ...service import PhotoService
 from ...thumbnails import SIZES
 from ..deps import get_service, translate_errors
-from ..schemas import TrashRequest
+from ..schemas import ExportRequest, TrashRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/images", tags=["images"])
@@ -34,11 +34,39 @@ def trash_images(req: TrashRequest,
     except Exception as exc:
         raise translate_errors(exc)
 
+
+@router.post("/export")
+def export_images(req: ExportRequest,
+                  service: PhotoService = Depends(get_service)):
+    """Copy originals into a folder of the user's choosing.
+
+    Purely additive: sources are never moved, renamed, or overwritten.
+    """
+    try:
+        return service.export_images(req.image_ids, req.folder)
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/{image_id}/reveal")
+def reveal_image(image_id: int, service: PhotoService = Depends(get_service)):
+    """Open the OS file manager with this file selected. Local desktop only."""
+    try:
+        return service.reveal_image(image_id)
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
 MIME_BY_SUFFIX = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic",
     ".heif": "image/heif", ".tif": "image/tiff", ".tiff": "image/tiff",
-    ".bmp": "image/bmp",
+    ".bmp": "image/bmp", ".avif": "image/avif",
+    # FileResponse supports HTTP Range, which is what lets <video> seek.
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+    ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    ".3gp": "video/3gpp", ".mpg": "video/mpeg", ".mpeg": "video/mpeg",
+    ".wmv": "video/x-ms-wmv", ".mts": "video/mp2t", ".m2ts": "video/mp2t",
 }
 
 

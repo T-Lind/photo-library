@@ -46,6 +46,8 @@ class Filters:
     near_lat: Optional[float] = None
     near_lon: Optional[float] = None
     near_km: float = 1.0
+    # "image" or "video"; None = both.
+    media: Optional[str] = None
 
     @property
     def is_empty(self) -> bool:
@@ -53,7 +55,7 @@ class Filters:
                 and not self.people_ids and self.has_location is None
                 and self.has_faces is None and not self.folder
                 and not self.camera and not self.untagged_only
-                and self.near_lat is None)
+                and self.near_lat is None and self.media is None)
 
 
 class LibraryIndex:
@@ -73,6 +75,7 @@ class LibraryIndex:
         self.lat = np.zeros(0, dtype=np.float64)
         self.lon = np.zeros(0, dtype=np.float64)
         self.face_count = np.zeros(0, dtype=np.int32)
+        self.is_video = np.zeros(0, dtype=bool)
         self.folders: List[str] = []
         self.cameras: List[str] = []
         self.ocr_text: List[str] = []          # lowercase; "" = none/unscanned
@@ -114,9 +117,15 @@ class LibraryIndex:
             self._version = None
 
     def _rebuild(self, version: Optional[int]) -> None:
-        table = self._library.images.to_lance().to_table(
-            columns=["image_id", "taken_at", "added_at", "lat", "lon",
-                     "face_count", "people_ids", "folder", "camera"])
+        images = self._library.images
+        columns = ["image_id", "taken_at", "added_at", "lat", "lon",
+                   "face_count", "people_ids", "folder", "camera"]
+        # A library indexed before video support lacks this column until its
+        # next indexing run migrates it; browsing must not require a write.
+        has_media = "media_type" in images.schema.names
+        if has_media:
+            columns.append("media_type")
+        table = images.to_lance().to_table(columns=columns)
         n = table.num_rows
         logger.debug("Rebuilding browse index over %d images", n)
 
@@ -130,6 +139,12 @@ class LibraryIndex:
             _floats(table["face_count"]), nan=0.0).astype(np.int32)
         self.folders = [f or "" for f in table["folder"].to_pylist()]
         self.cameras = [c or "" for c in table["camera"].to_pylist()]
+        if has_media:
+            self.is_video = np.fromiter(
+                (m == "video" for m in table["media_type"].to_pylist()),
+                dtype=bool, count=n)
+        else:
+            self.is_video = np.zeros(n, dtype=bool)
 
         self._row_of_id = {int(v): i for i, v in enumerate(self.image_ids)}
 
@@ -270,6 +285,9 @@ class LibraryIndex:
         if filters.has_faces is not None:
             has = self.face_count > 0
             mask &= has if filters.has_faces else ~has
+
+        if filters.media:
+            mask &= self.is_video if filters.media == "video" else ~self.is_video
 
         if filters.untagged_only:
             tagged = np.zeros(n, dtype=bool)

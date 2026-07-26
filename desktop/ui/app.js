@@ -33,6 +33,7 @@ const state = {
   selectionScope: "photos", // "photos" or "album" — where the picks live
   trashArmed: false,
   imageQuery: null,       // {url, label, blob} — active search-by-image chip
+  modalTrashArmed: false, // Delete pressed once in the viewer, awaiting confirm
 };
 
 const RECENT_KEY = "photolib.recentSearches";
@@ -125,6 +126,22 @@ function formatDate(value) {
   return Number.isNaN(date.valueOf())
     ? "no date"
     : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.round((ms || 0) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function videoBadge(photo) {
+  return photo.media_type === "video"
+    ? `<span class="video-badge mono">▶ ${formatDuration(photo.duration_ms)}</span>`
+    : "";
 }
 
 function personLabel(person) {
@@ -495,6 +512,7 @@ function currentFilters() {
     people_ids: state.selectedPeople,
     people_mode: state.selectedPeople.length > 1 ? state.peopleMode : "any",
     camera: $("cameraFilter").value || null,
+    media: $("mediaFilter").value || null,
     has_location: $("locationToggle").checked ? true : null,
     untagged_only: state.untaggedOnly,
     near_lat: state.near ? state.near.lat : null,
@@ -508,6 +526,7 @@ function clearFilters() {
   $("dateFrom").value = "";
   $("dateTo").value = "";
   $("cameraFilter").value = "";
+  $("mediaFilter").value = "";
   $("locationToggle").checked = false;
   $("sortSelect").value = "relevance";
   state.selectedPeople = [];
@@ -604,6 +623,7 @@ function renderPhotos(result) {
         <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
         <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
         <span class="frame-no mono">${String(offset + i + 1).padStart(3, "0")}</span>
+        ${videoBadge(photo)}
         <span class="photo-meta mono">
           <span>${escapeHtml(formatDate(photo.taken_at))}</span>
           <span>${photo.face_count ? `${photo.face_count}👤` : ""}</span>
@@ -773,6 +793,58 @@ async function batchTrash() {
   }
 }
 
+async function batchExport() {
+  const ids = [...state.selection];
+  if (!ids.length) return;
+  const button = $("selExport");
+  const folder = await chooseFolder(false);
+  if (!folder) return;
+  button.disabled = true;
+  startLoad();
+  try {
+    const body = await request("/images/export", {
+      method: "POST",
+      body: JSON.stringify({ image_ids: ids, folder }),
+    });
+    button.textContent = `Copied ${body.copied} ✓`;
+    if (body.missing || body.failed?.length) {
+      showError(`${body.copied} copied — but ${body.missing || 0} original(s) are missing` +
+        `${body.failed?.length ? ` and ${body.failed.length} failed` : ""}.`);
+    }
+    setTimeout(() => { button.textContent = "Export copies…"; }, 2200);
+  } catch (error) {
+    showError(`Export failed: ${error.message}`);
+  } finally {
+    button.disabled = false;
+    endLoad();
+  }
+}
+
+function selectAllVisible() {
+  const albumOpen = state.view === "albums"
+    && !$("albumDetail").classList.contains("hidden");
+  const scope = albumOpen ? "album" : "photos";
+  const ids = albumOpen
+    ? (state.currentAlbum?.images || []).map((r) => r.image_id)
+    : state.results.map((r) => r.image_id);
+  if (!ids.length) return;
+  if (state.selectionScope !== scope) state.selection.clear();
+  state.selectionScope = scope;
+  ids.forEach((id) => state.selection.add(id));
+  state.selectionAnchor = 0;
+  reflectSelection();
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard cheat sheet (?)
+// ---------------------------------------------------------------------------
+
+function toggleShortcuts(show) {
+  const modal = $("shortcutModal");
+  const wanted = show ?? modal.classList.contains("hidden");
+  modal.classList.toggle("hidden", !wanted);
+}
+
 // ---------------------------------------------------------------------------
 // Timeline
 // ---------------------------------------------------------------------------
@@ -819,15 +891,72 @@ function renderTimeline() {
 // Photo modal
 // ---------------------------------------------------------------------------
 
+// The stage shows either the <img> (with zoom/pan) or the <video>.
+function modalVideoActive() {
+  return !$("modalVideo").classList.contains("hidden");
+}
+
+function stopModalVideo() {
+  const video = $("modalVideo");
+  if (video.getAttribute("src")) {
+    video.pause();
+    delete video.dataset.imageId;   // cleared first: the load() below fires
+    video.removeAttribute("src");   // an error event we must ignore
+    video.removeAttribute("poster");
+    video.load();
+  }
+  video.classList.add("hidden");
+  $("videoFallback").classList.add("hidden");
+}
+
+function showModalMedia(imageId, isVideo) {
+  const img = $("modalImage");
+  const video = $("modalVideo");
+  $("modalCopyBtn").classList.toggle("hidden", Boolean(isVideo));
+  if (isVideo) {
+    if (img.getAttribute("src")) img.removeAttribute("src");
+    img.classList.add("hidden");
+    resetZoom();
+    if (video.dataset.imageId !== String(imageId)) {
+      $("videoFallback").classList.add("hidden");
+      video.dataset.imageId = String(imageId);
+      video.poster = `${API}/images/${imageId}/thumbnail?size=preview&format=jpeg`;
+      video.src = `${API}/images/${imageId}`;
+    }
+    video.classList.remove("hidden");
+  } else {
+    stopModalVideo();
+    img.classList.remove("hidden");
+    if (!img.getAttribute("src")) img.src = `${API}/images/${imageId}`;
+  }
+}
+
+function disarmModalTrash() {
+  if (!state.modalTrashArmed) return;
+  state.modalTrashArmed = false;
+  const meta = $("modalMeta");
+  meta.classList.remove("danger-text");
+  if (meta.dataset.prev != null) {
+    meta.textContent = meta.dataset.prev;
+    delete meta.dataset.prev;
+  }
+}
+
 async function openPhoto(imageId, filename = "") {
   state.modalIndex = state.results.findIndex((r) => r.image_id === Number(imageId));
   state.modalImageId = Number(imageId);
+  disarmModalTrash();
   updateModalNav();
   $("albumPickPanel").classList.add("hidden");
   $("modalAlbumBtn").textContent = "Add to album";
+  $("modalCopyBtn").textContent = "Copy image";
+  $("modalRevealBtn").textContent = "Show in Explorer";
   $("photoModal").classList.remove("hidden");
   resetZoom();
-  $("modalImage").src = `${API}/images/${imageId}`;
+  // The grid row usually knows the media type; details confirm it below.
+  const known = (state.modalIndex >= 0 ? state.results[state.modalIndex] : null)
+    || (state.currentAlbum?.images || []).find((r) => r.image_id === Number(imageId));
+  showModalMedia(imageId, known?.media_type === "video");
   $("modalName").textContent = filename || "Loading…";
   $("modalMeta").textContent = "";
   $("modalExif").classList.add("hidden");
@@ -840,11 +969,16 @@ async function openPhoto(imageId, filename = "") {
     closePhoto();
     showSimilar(imageId, filename);
   };
+  $("modalCopyBtn").onclick = () => copyModalImage(imageId, $("modalCopyBtn"));
+  $("modalRevealBtn").onclick = () => revealImage(imageId, $("modalRevealBtn"));
   try {
     const details = await request(`/images/${imageId}/details`);
+    if (state.modalImageId !== Number(imageId)) return; // user moved on
+    showModalMedia(imageId, details.media_type === "video");
     $("modalName").textContent = details.filename || "Photo";
     $("modalMeta").textContent = [
       formatDate(details.taken_at),
+      details.media_type === "video" ? formatDuration(details.duration_ms) : "",
       details.camera,
       details.width && details.height ? `${details.width}×${details.height}` : "",
     ].filter(Boolean).join(" · ").toUpperCase();
@@ -859,6 +993,7 @@ function renderExif(details) {
   const rows = [];
   const add = (key, value) => { if (value) rows.push([key, value]); };
   add("taken", details.taken_at ? new Date(details.taken_at).toLocaleString() : "");
+  add("length", details.media_type === "video" ? formatDuration(details.duration_ms) : "");
   add("camera", details.camera);
   add("size", details.width && details.height ? `${details.width} × ${details.height}` : "");
   add("file", details.file_size ? formatBytes(details.file_size) : "");
@@ -917,6 +1052,79 @@ async function copyImageText(imageId, button) {
     setTimeout(() => { button.textContent = "Copy text"; }, 1500);
   } catch (error) {
     showError(`Could not copy the text: ${error.message}`);
+  }
+}
+
+async function copyModalImage(imageId, button) {
+  // The preview-size JPEG re-encode is used as the source: unlike the
+  // original, it is decodable for every format (HEIC and RAW included).
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) {
+      throw new Error("the clipboard is not available here");
+    }
+    const img = new Image();
+    img.src = `${API}/images/${imageId}/thumbnail?size=preview&format=jpeg`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext("2d").drawImage(img, 0, 0);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("could not encode the image"))),
+      "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    button.textContent = "Copied ✓";
+    setTimeout(() => { button.textContent = "Copy image"; }, 1500);
+  } catch (error) {
+    showError(`Could not copy the image: ${error.message}`);
+  }
+}
+
+async function revealImage(imageId, button) {
+  try {
+    await request(`/images/${imageId}/reveal`, { method: "POST" });
+    button.textContent = "Opened ✓";
+    setTimeout(() => { button.textContent = "Show in Explorer"; }, 1500);
+  } catch (error) {
+    showError(`Could not show the file: ${error.message}`);
+  }
+}
+
+async function trashOpenPhoto() {
+  const imageId = state.modalImageId;
+  if (imageId == null) return;
+  const meta = $("modalMeta");
+  if (!state.modalTrashArmed) {
+    state.modalTrashArmed = true;
+    meta.dataset.prev = meta.textContent;
+    meta.textContent = "PRESS DELETE AGAIN — MOVES THE FILE TO THE RECYCLE BIN";
+    meta.classList.add("danger-text");
+    setTimeout(disarmModalTrash, 4000);
+    return;
+  }
+  disarmModalTrash();
+  startLoad();
+  try {
+    const body = await request("/images/trash", {
+      method: "POST",
+      body: JSON.stringify({ image_ids: [imageId] }),
+    });
+    if (body.failed?.length) {
+      showError("The file could not be moved to the Recycle Bin — it stays in the library.");
+      return;
+    }
+    closePhoto();
+    state.selection.delete(imageId);
+    reflectSelection();
+    await Promise.all([loadStats(), loadPeople(), loadTimeline()]);
+    if (state.currentAlbum && !$("albumDetail").classList.contains("hidden")) {
+      openAlbum(state.currentAlbum.album_id);
+    }
+    if (state.view === "photos") search(state.page);
+  } catch (error) {
+    showError(`Trash failed: ${error.message}`);
+  } finally {
+    endLoad();
   }
 }
 
@@ -1005,11 +1213,13 @@ function initZoom() {
   const stage = $("modalStage");
   const img = $("modalImage");
   stage.addEventListener("wheel", (event) => {
+    if (modalVideoActive()) return; // the player owns its own gestures
     event.preventDefault();
     zoomTowards(event.clientX, event.clientY,
       Math.exp(-event.deltaY * 0.0016));
   }, { passive: false });
   stage.addEventListener("dblclick", (event) => {
+    if (modalVideoActive()) return; // double-click on a video = fullscreen
     if (zoom.scale > 1) resetZoom();
     else zoomTowards(event.clientX, event.clientY, 2.5);
   });
@@ -1038,6 +1248,8 @@ function initZoom() {
 function closePhoto() {
   $("photoModal").classList.add("hidden");
   $("modalImage").removeAttribute("src");
+  stopModalVideo();
+  disarmModalTrash();
   resetZoom();
 }
 
@@ -1845,6 +2057,7 @@ function renderAlbumPhotos(detail) {
     <div class="photo album-photo ${state.selection.has(photo.image_id) ? "selected" : ""}" data-image-id="${photo.image_id}" data-index="${i}">
       <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
       <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
+      ${videoBadge(photo)}
       <button class="album-remove mono" type="button" data-remove="${photo.image_id}" title="Remove from album">×</button>
     </div>
   `).join("");
@@ -2143,11 +2356,16 @@ async function importCuration(file) {
 
 async function loadStats() {
   const stats = await request("/stats");
-  $("topStats").textContent = [
-    `${(stats.total_images || 0).toLocaleString()} PHOTOS`,
+  const videos = stats.total_videos || 0;
+  const parts = [
+    `${((stats.total_images || 0) - videos).toLocaleString()} PHOTOS`,
+  ];
+  if (videos) parts.push(`${videos.toLocaleString()} VIDEOS`);
+  parts.push(
     `${(stats.total_people || 0).toLocaleString()} PEOPLE`,
     `${(stats.total_faces || 0).toLocaleString()} FACES`,
-  ].join(" · ");
+  );
+  $("topStats").textContent = parts.join(" · ");
 }
 
 async function loadCameras() {
@@ -2253,6 +2471,7 @@ async function init() {
   $("dateFrom").addEventListener("change", () => search(1));
   $("dateTo").addEventListener("change", () => search(1));
   $("cameraFilter").addEventListener("change", () => search(1));
+  $("mediaFilter").addEventListener("change", () => search(1));
   $("locationToggle").addEventListener("change", () => search(1));
   $("clearFilters").addEventListener("click", clearFilters);
   $("similarClear").addEventListener("click", () => {
@@ -2324,6 +2543,7 @@ async function init() {
 
   $("selClear").addEventListener("click", clearSelection);
   $("selTrash").addEventListener("click", batchTrash);
+  $("selExport").addEventListener("click", batchExport);
   $("selRemoveAlbum").addEventListener("click", batchRemoveFromAlbum);
   $("selAlbumBtn").addEventListener("click", () => toggleSelectionAlbumPanel());
   $("selAlbumCreate").addEventListener("submit", async (event) => {
@@ -2343,12 +2563,27 @@ async function init() {
   });
   initZoom();
 
+  $("shortcutClose").addEventListener("click", () => toggleShortcuts(false));
+  $("shortcutModal").addEventListener("click", (event) => {
+    if (event.target === $("shortcutModal")) toggleShortcuts(false);
+  });
+  $("modalVideo").addEventListener("error", () => {
+    // Fires for real decode failures (e.g. HEVC without the Windows codec)
+    // and also when a source is detached — dataset.imageId separates them.
+    const imageId = $("modalVideo").dataset.imageId;
+    if (!imageId) return;
+    $("videoFallbackLink").href = `${API}/images/${imageId}?download=true`;
+    $("videoFallback").classList.remove("hidden");
+  });
+
   document.addEventListener("keydown", (event) => {
     const photoOpen = !$("photoModal").classList.contains("hidden");
+    const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName);
     if (event.key === "Escape") {
       // Close only the topmost layer, so backing out of a photo opened
       // from a person still leaves the person open.
-      if (photoOpen) closePhoto();
+      if (!$("shortcutModal").classList.contains("hidden")) toggleShortcuts(false);
+      else if (photoOpen) closePhoto();
       else if (!$("personModal").classList.contains("hidden")) closePerson();
       else if (!$("selAlbumPanel").classList.contains("hidden")) {
         toggleSelectionAlbumPanel(false);
@@ -2356,13 +2591,52 @@ async function init() {
       else togglePeoplePanel(false);
       return;
     }
-    if (photoOpen && event.key === "ArrowRight") navigatePhoto(1);
-    if (photoOpen && event.key === "ArrowLeft") navigatePhoto(-1);
-    if (event.key === "/" && !photoOpen
-        && !["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) {
+    if (typing) return; // every other key below is a shortcut, not input
+
+    if (event.key === "?") {
+      event.preventDefault();
+      toggleShortcuts();
+      return;
+    }
+    if (event.key === "/" && !photoOpen) {
       event.preventDefault();
       setView("photos");
       $("searchInput").focus();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      if (photoOpen) return;
+      const albumOpen = state.view === "albums"
+        && !$("albumDetail").classList.contains("hidden");
+      if (state.view === "photos" || albumOpen) {
+        event.preventDefault();
+        selectAllVisible();
+      }
+      return;
+    }
+    if (event.key === "Delete") {
+      if (photoOpen) trashOpenPhoto();
+      else if (state.selection.size) batchTrash();
+      return;
+    }
+    if (!photoOpen) return;
+    if (event.key === "ArrowRight") navigatePhoto(1);
+    if (event.key === "ArrowLeft") navigatePhoto(-1);
+    if (event.target.tagName === "VIDEO") return; // native controls own these
+    if (event.key === " " && modalVideoActive()) {
+      event.preventDefault();
+      const video = $("modalVideo");
+      if (video.paused) video.play();
+      else video.pause();
+      return;
+    }
+    if (!modalVideoActive()) {
+      const rect = $("modalStage").getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      if (event.key === "+" || event.key === "=") zoomTowards(cx, cy, 1.3);
+      if (event.key === "-" || event.key === "_") zoomTowards(cx, cy, 1 / 1.3);
+      if (event.key === "0") resetZoom();
     }
   });
 

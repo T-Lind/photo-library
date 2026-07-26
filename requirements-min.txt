@@ -14,3 +14,8 @@ ExifRead>=3.0
 tqdm>=4.66
 # Deleting photos goes through the OS trash, never a hard unlink.
 Send2Trash>=1.8
+# Bundled ffmpeg binary — videos are indexed by their poster frame and
+# served for in-app playback. Optional at runtime: without it, videos
+# are skipped with a warning.
+imageio-ffmpeg>=0.5
+

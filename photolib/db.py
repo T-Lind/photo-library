@@ -45,7 +45,7 @@ UNASSIGNED = -1  # person_id for a face that belongs to no person yet
 # is the single easiest way to make this system feel slow.
 IMAGE_LIST_COLUMNS = [
     "image_id", "path", "filename", "taken_at", "lat", "lon", "place",
-    "people_ids", "face_count", "width", "height",
+    "people_ids", "face_count", "width", "height", "media_type", "duration_ms",
 ]
 
 BROWSE_COLUMNS = ["image_id", "taken_at", "people_ids", "lat", "lon", "face_count"]
@@ -74,6 +74,10 @@ def images_schema(dim: int) -> pa.Schema:
         pa.field("camera", pa.string()),
         pa.field("people_ids", pa.list_(pa.int32())),
         pa.field("face_count", pa.int32()),
+        # "image" or "video". A video row's vector/faces/phash all come from
+        # its poster frame, so every image feature works on it unchanged.
+        pa.field("media_type", pa.string()),
+        pa.field("duration_ms", pa.int64()),
     ])
 
 
@@ -229,6 +233,28 @@ class Library:
     def initialised(self) -> bool:
         names = set(self.table_names())
         return {IMAGES, FACES, PEOPLE, META}.issubset(names)
+
+    def ensure_media_columns(self) -> None:
+        """Backfill media_type/duration_ms on libraries indexed before videos.
+
+        An in-place ``add_columns`` — every existing row becomes an "image",
+        no re-embedding, no schema version bump. Same philosophy as the OCR
+        table: old libraries gain the feature without a rebuild.
+        """
+        with self._lock:
+            if IMAGES not in self.table_names():
+                return
+            tbl = self._db.open_table(IMAGES)
+            names = set(tbl.schema.names)
+            additions = {}
+            if "media_type" not in names:
+                additions["media_type"] = "'image'"
+            if "duration_ms" not in names:
+                additions["duration_ms"] = "CAST(0 AS BIGINT)"
+            if additions:
+                tbl.add_columns(additions)
+                logger.info("Backfilled media columns on images: %s",
+                            sorted(additions))
 
     # -- metadata --------------------------------------------------------
     def read_meta(self) -> Optional[LibraryMeta]:
