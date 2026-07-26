@@ -47,6 +47,14 @@ except Exception as exc:
     print(f"WARNING: rapidocr not bundled ({exc}); "
           "text-in-photos search will be unavailable", file=sys.stderr)
 
+# imageio-ffmpeg carries the ffmpeg executable as package data — that binary
+# is what indexes and poster-frames videos. Without it, videos are skipped.
+try:
+    datas += collect_data_files("imageio_ffmpeg")
+except Exception as exc:
+    print(f"WARNING: imageio-ffmpeg not bundled ({exc}); "
+          "videos will not be indexed", file=sys.stderr)
+
 hiddenimports = [
     "uvicorn.logging",
     "uvicorn.loops.auto",
@@ -66,6 +74,8 @@ hiddenimports = [
     "send2trash",
     "send2trash.win",
     "send2trash.win.modern",
+    # Video indexing and playback posters.
+    "imageio_ffmpeg",
 ]
 
 # Nothing here uses PyTorch — the ONNX backend is the entire point. Excluding

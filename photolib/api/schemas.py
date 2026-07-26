@@ -25,6 +25,7 @@ class SearchRequest(BaseModel):
     near_lat: Optional[float] = Field(None, ge=-90, le=90)
     near_lon: Optional[float] = Field(None, ge=-180, le=180)
     near_km: float = Field(1.0, gt=0, le=20000)
+    media: Optional[Literal["image", "video"]] = None
     sort: SortOption = "relevance"
     page: int = Field(1, ge=1)
     per_page: Optional[int] = Field(None, ge=1, le=1000)
@@ -51,6 +52,8 @@ class ImageSummary(BaseModel):
     face_count: int = 0
     width: int = 0
     height: int = 0
+    media_type: str = "image"
+    duration_ms: int = 0
     score: Optional[float] = None
     # True when the query matched text found in the image (OCR).
     text_match: Optional[bool] = None
@@ -141,6 +144,11 @@ class AlbumItemsRequest(BaseModel):
 
 class TrashRequest(BaseModel):
     image_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+class ExportRequest(BaseModel):
+    image_ids: List[int] = Field(..., min_length=1, max_length=500)
+    folder: str = Field(..., min_length=1)
 
 
 class ReclusterRequest(BaseModel):

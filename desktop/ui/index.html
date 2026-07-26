@@ -94,6 +94,11 @@
             <input id="dateFrom" class="field slim" type="date" aria-label="Taken after" title="Taken after">
             <input id="dateTo" class="field slim" type="date" aria-label="Taken before" title="Taken before">
             <select id="cameraFilter" class="select slim hidden" aria-label="Camera"><option value="">Any camera</option></select>
+            <select id="mediaFilter" class="select slim" aria-label="Photos or videos">
+              <option value="">Photos + videos</option>
+              <option value="image">Photos only</option>
+              <option value="video">Videos only</option>
+            </select>
             <label class="toggle mono" id="locationToggleWrap" title="Only photos with GPS data">
               <input id="locationToggle" type="checkbox"> has location
             </label>
@@ -253,6 +258,11 @@
       <button id="modalNext" class="modal-nav next hidden" type="button" aria-label="Next photo">›</button>
       <div id="modalStage" class="modal-stage" title="Scroll to zoom · double-click to toggle · drag to pan">
         <img id="modalImage" alt="Full-size photo" draggable="false">
+        <video id="modalVideo" class="hidden" controls playsinline preload="metadata" aria-label="Video player"></video>
+      </div>
+      <div id="videoFallback" class="video-fallback hidden">
+        <span>This video's codec isn't supported by the built-in player. The file itself is fine.</span>
+        <a id="videoFallbackLink" class="btn slim-btn" href="#" download>Open the original</a>
       </div>
       <div class="modal-info">
         <div class="modal-text">
@@ -261,6 +271,8 @@
         </div>
         <div class="modal-buttons">
           <button id="modalDetailsBtn" class="btn ghost" type="button">Details</button>
+          <button id="modalCopyBtn" class="btn ghost" type="button" title="Copy the picture to the clipboard">Copy image</button>
+          <button id="modalRevealBtn" class="btn ghost" type="button" title="Show the original file in Explorer">Show in Explorer</button>
           <button id="modalSimilar" class="btn ghost" type="button">More like this</button>
           <div class="album-add">
             <button id="modalAlbumBtn" class="btn ghost" type="button" aria-haspopup="true" aria-expanded="false">Add to album</button>
@@ -300,8 +312,28 @@
         </div>
       </div>
       <button id="selRemoveAlbum" class="btn hidden" type="button">Remove from album</button>
+      <button id="selExport" class="btn" type="button" title="Copy the selected originals into a folder you pick">Export copies…</button>
       <button id="selTrash" class="btn danger-solid" type="button">Trash</button>
       <button id="selClear" class="btn ghost" type="button" title="Or press Escape">Clear</button>
+    </div>
+  </div>
+
+  <div id="shortcutModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+    <div class="modal-card shortcut-card">
+      <button id="shortcutClose" class="modal-close" type="button" aria-label="Close shortcuts">×</button>
+      <h3>Keyboard shortcuts</h3>
+      <div class="shortcut-grid">
+        <span><span class="kbd mono">/</span></span><span>Jump to search</span>
+        <span><span class="kbd mono">Ctrl</span>+click · <span class="kbd mono">Shift</span>+click</span><span>Select photos · select a range</span>
+        <span><span class="kbd mono">Ctrl</span>+<span class="kbd mono">A</span></span><span>Select everything on this page</span>
+        <span><span class="kbd mono">Delete</span></span><span>Move to the Recycle Bin — press twice to confirm</span>
+        <span><span class="kbd mono">←</span> <span class="kbd mono">→</span></span><span>Previous / next photo in the viewer</span>
+        <span><span class="kbd mono">+</span> <span class="kbd mono">−</span> <span class="kbd mono">0</span></span><span>Zoom in / out / reset in the viewer</span>
+        <span><span class="kbd mono">Space</span></span><span>Play or pause a video</span>
+        <span><span class="kbd mono">Ctrl</span>+<span class="kbd mono">V</span></span><span>Paste an image to search by it</span>
+        <span><span class="kbd mono">Esc</span></span><span>Close the top layer · clear the selection</span>
+        <span><span class="kbd mono">?</span></span><span>Show or hide this list</span>
+      </div>
     </div>
   </div>
 
