@@ -116,3 +116,25 @@ def test_stats_report_ocr_coverage(ocr_indexed):
     stats = ocr_indexed.stats()
     assert stats["ocr"]["scanned"] == 8
     assert stats["ocr"]["available"] is True
+
+
+def test_full_text_is_retrievable_for_copying(ocr_indexed):
+    from photolib.browse import Filters
+    from photolib.service import NotFound
+
+    page = ocr_indexed.search("dog park running", Filters(), sort="relevance")
+    body = ocr_indexed.ocr_text(page.results[0]["image_id"])
+    assert "dog" in body["text"]
+    assert body["engine"] == "stub"
+
+    with pytest.raises(NotFound):
+        ocr_indexed.ocr_text(987654)
+
+
+def test_full_text_is_empty_without_ocr(indexed_service):
+    """A library that has never been scanned answers with empty text."""
+    from photolib.browse import Filters
+
+    page = indexed_service.search(None, Filters())
+    body = indexed_service.ocr_text(page.results[0]["image_id"])
+    assert body["text"] == ""

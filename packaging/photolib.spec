@@ -62,6 +62,10 @@ hiddenimports = [
     "winsdk.windows.media.ocr",
     "winsdk.windows.graphics.imaging",
     "winsdk.windows.storage.streams",
+    # Recycle Bin support; the platform backend is chosen at runtime.
+    "send2trash",
+    "send2trash.win",
+    "send2trash.win.modern",
 ]
 
 # Nothing here uses PyTorch — the ONNX backend is the entire point. Excluding

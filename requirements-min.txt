@@ -12,3 +12,5 @@ pillow>=11.0
 pillow-heif>=0.20
 ExifRead>=3.0
 tqdm>=4.66
+# Deleting photos goes through the OS trash, never a hard unlink.
+Send2Trash>=1.8

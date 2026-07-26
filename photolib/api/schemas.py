@@ -139,6 +139,10 @@ class AlbumItemsRequest(BaseModel):
     image_ids: List[int] = Field(..., min_length=1)
 
 
+class TrashRequest(BaseModel):
+    image_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
 class ReclusterRequest(BaseModel):
     threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     knn: Optional[int] = Field(None, ge=2, le=200)

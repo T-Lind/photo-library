@@ -225,6 +225,18 @@
 
           <section class="panel">
             <div class="panel-head">
+              <div><h2>Backup</h2><p>Person names, hidden people, and album contents — the work you did by hand. The index itself can always be rebuilt; this cannot. Photos are matched by content, so the backup still lines up after files move or the library is re-indexed.</p></div>
+              <div class="panel-actions">
+                <button id="curationExport" class="btn primary" type="button">Export backup</button>
+                <button id="curationImportBtn" class="btn" type="button">Restore…</button>
+                <input id="curationFile" class="hidden" type="file" accept=".json,application/json" aria-label="Curation backup file">
+              </div>
+            </div>
+            <div id="curationStatus" class="mono model-lines"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
               <div><h2>Models</h2><p id="modelStatusCopy">Everything runs on this machine.</p></div>
             </div>
             <div id="modelStatusList" class="mono model-lines"></div>
@@ -239,7 +251,9 @@
       <button id="modalClose" class="modal-close" type="button" aria-label="Close photo">×</button>
       <button id="modalPrev" class="modal-nav prev hidden" type="button" aria-label="Previous photo">‹</button>
       <button id="modalNext" class="modal-nav next hidden" type="button" aria-label="Next photo">›</button>
-      <img id="modalImage" alt="Full-size photo">
+      <div id="modalStage" class="modal-stage" title="Scroll to zoom · double-click to toggle · drag to pan">
+        <img id="modalImage" alt="Full-size photo" draggable="false">
+      </div>
       <div class="modal-info">
         <div class="modal-text">
           <strong id="modalName">Photo</strong>
@@ -269,6 +283,25 @@
           <button id="faceSearch" class="btn slim-btn" type="button">Their photos</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div id="selectionBar" class="selection-bar hidden" role="toolbar" aria-label="Selected photos">
+    <span id="selectionCount" class="mono">0 SELECTED</span>
+    <div class="selection-actions">
+      <div class="album-add">
+        <button id="selAlbumBtn" class="btn" type="button" aria-haspopup="true" aria-expanded="false">Add to album</button>
+        <div id="selAlbumPanel" class="picker-panel up right hidden">
+          <div id="selAlbumList" class="picker-list"></div>
+          <form id="selAlbumCreate" class="album-create">
+            <input id="selAlbumName" class="field slim" type="text" maxlength="200" placeholder="New album…" aria-label="New album name">
+            <button class="btn slim-btn" type="submit">Create &amp; add</button>
+          </form>
+        </div>
+      </div>
+      <button id="selRemoveAlbum" class="btn hidden" type="button">Remove from album</button>
+      <button id="selTrash" class="btn danger-solid" type="button">Trash</button>
+      <button id="selClear" class="btn ghost" type="button" title="Or press Escape">Clear</button>
     </div>
   </div>
 
