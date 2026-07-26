@@ -571,6 +571,113 @@ class PhotoService:
             self.library, int(person_id), self.face_backend.dim,
             self.settings.face_match_threshold, limit)
 
+    def person_faces(self, person_id: int, limit: int = 200) -> List[dict]:
+        """A person's faces, best quality first — the person review view."""
+        self.get_person(person_id)
+        rows = (
+            self.library.faces.search()
+            .where(f"person_id = {int(person_id)}")
+            .select(["face_id", "image_id", "x", "y", "w", "h",
+                     "quality", "confirmed"])
+            .limit(limit)
+            .to_arrow()
+            .to_pylist()
+        )
+        rows.sort(key=lambda r: float(r["quality"] or 0.0), reverse=True)
+        return [{
+            "face_id": int(r["face_id"]),
+            "image_id": int(r["image_id"]),
+            "bbox": [int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])],
+            "quality": round(float(r["quality"]), 3),
+            "confirmed": bool(r["confirmed"]),
+        } for r in rows]
+
+    def merge_suggestions(self, limit: int = 20,
+                          min_similarity: Optional[float] = None) -> List[dict]:
+        """Pairs of people who are probably the same person.
+
+        Clustering errs on the side of splitting (merging two strangers is
+        worse than showing one person twice), so a real library accumulates
+        split identities. Comparing the stored centroids finds them; a pair
+        is vetoed when the two people appear together in a photo, because
+        two faces in the same frame are almost never the same person.
+        """
+        self.require_ready()
+        if min_similarity is None:
+            min_similarity = self.settings.face_cluster_threshold
+
+        try:
+            rows = self.library.people.to_lance().to_table(
+                columns=["person_id", "name", "centroid", "hidden"]).to_pylist()
+        except Exception:
+            return []
+
+        counts = self.index.person_counts()
+        people = []
+        for r in rows:
+            if r["hidden"]:
+                continue
+            centroid = np.asarray(r["centroid"] or [], dtype=np.float32)
+            if centroid.size == 0 or float(np.linalg.norm(centroid)) < 1e-6:
+                continue
+            people.append({
+                "person_id": int(r["person_id"]),
+                "name": r["name"] or "",
+                "centroid": centroid,
+                "photo_count": counts.get(int(r["person_id"]), 0),
+            })
+        if len(people) < 2:
+            return []
+
+        matrix = np.stack([p["centroid"] for p in people])
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.maximum(norms, 1e-12)
+        sims = matrix @ matrix.T
+
+        covers = self.people_by_id()
+        pairs = []
+        for i in range(len(people)):
+            for j in range(i + 1, len(people)):
+                similarity = float(sims[i, j])
+                if similarity < min_similarity:
+                    continue
+                if self._people_cooccur(people[i]["person_id"],
+                                        people[j]["person_id"]):
+                    continue
+                pairs.append((similarity, people[i], people[j]))
+
+        pairs.sort(key=lambda t: t[0], reverse=True)
+
+        def public(p: dict) -> dict:
+            info = covers.get(p["person_id"], {})
+            return {
+                "person_id": p["person_id"],
+                "name": p["name"],
+                "photo_count": p["photo_count"],
+                "face_count": info.get("face_count", 0),
+                "cover_face_id": info.get("cover_face_id", -1),
+            }
+
+        out = []
+        for similarity, a, b in pairs[:limit]:
+            # Keep the named identity; failing that, the better-established one.
+            a_keeps = (bool(a["name"]), a["photo_count"], -a["person_id"])
+            b_keeps = (bool(b["name"]), b["photo_count"], -b["person_id"])
+            target, source = (a, b) if a_keeps >= b_keeps else (b, a)
+            out.append({
+                "source": public(source),
+                "target": public(target),
+                "similarity": round(similarity, 4),
+            })
+        return out
+
+    def _people_cooccur(self, person_a: int, person_b: int) -> bool:
+        rows_a = self.index._rows_by_person.get(int(person_a))
+        rows_b = self.index._rows_by_person.get(int(person_b))
+        if rows_a is None or rows_b is None:
+            return False
+        return bool(np.intersect1d(rows_a, rows_b, assume_unique=False).size)
+
     # -- person bookkeeping ---------------------------------------------
     def _create_person(self, name: str = "") -> int:
         import pyarrow as pa

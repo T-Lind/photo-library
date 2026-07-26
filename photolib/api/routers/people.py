@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
@@ -29,6 +29,23 @@ def list_people(include_hidden: bool = Query(False),
     """
     try:
         return service.list_people(include_hidden, named_only, min_photos)
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+# Declared before /{person_id} so the literal path wins over the int parse.
+@router.get("/merge-suggestions")
+def merge_suggestions(limit: int = Query(20, ge=1, le=100),
+                      min_similarity: Optional[float] = Query(
+                          None, ge=0.0, le=1.0),
+                      service: PhotoService = Depends(get_service)):
+    """Pairs of people who look like the same person split in two.
+
+    Auto-clustering deliberately errs toward splitting; this surfaces the
+    likely splits so fixing them is one click instead of a hunt.
+    """
+    try:
+        return {"suggestions": service.merge_suggestions(limit, min_similarity)}
     except Exception as exc:
         raise translate_errors(exc)
 
@@ -84,5 +101,15 @@ def suggestions(person_id: int, limit: int = Query(60, ge=1, le=300),
     """Unassigned faces that look like this person, for one-click confirmation."""
     try:
         return {"suggestions": service.person_suggestions(person_id, limit)}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.get("/{person_id}/faces")
+def person_faces(person_id: int, limit: int = Query(200, ge=1, le=1000),
+                 service: PhotoService = Depends(get_service)):
+    """This person's faces, best first — powers the review and merge views."""
+    try:
+        return {"faces": service.person_faces(person_id, limit)}
     except Exception as exc:
         raise translate_errors(exc)

@@ -19,7 +19,7 @@ def test_indexes_every_photo_including_subfolders(indexer, service, photo_dir):
     assert service.library.images.count_rows(None) == 8
 
     paths = service.library.images.to_lance().to_table(columns=["path"])["path"].to_pylist()
-    assert any("nested/deeper" in p for p in paths)
+    assert any("nested/deeper" in p.replace("\\", "/") for p in paths)
 
 
 def test_embeddings_are_normalised(indexer, service, photo_dir):
@@ -168,3 +168,35 @@ def test_face_boxes_are_stored_in_original_image_coordinates(indexer, service,
     # Stored unscaled it would be MARKER_WIDTH; correctly scaled it is
     # MARKER_WIDTH * scale.
     assert faces[0]["w"] == MARKER_WIDTH * scale
+
+
+def test_merged_person_captures_future_photos(indexer, service, photo_dir):
+    """A merge must hold for photos indexed later, not just existing ones."""
+    indexer.index_directory(photo_dir)
+    service.index.invalidate()
+
+    # Locate the person in the solo beach photo and split one face off into
+    # a second identity, as a bad clustering run would.
+    paths = service.library.images.to_lance().to_table(
+        columns=["image_id", "path"]).to_pylist()
+    beach = next(r for r in paths
+                 if r["path"].endswith("beach-sunset-holiday-20180704.jpg"))
+    face = service.faces_in_image(beach["image_id"])[0]
+    original = face["person_id"]
+
+    split = service.assign_faces([face["face_id"]], person_id=None)["person_id"]
+    assert split != original
+
+    service.merge_people(split, original)
+
+    # A new photo of the same person must land on the merged identity.
+    make_photo(photo_dir / "picnic-blanket-park-20240102.jpg", ["alice"])
+    stats = indexer.index_directory(photo_dir)
+    assert stats.added == 1
+
+    new = next(r for r in service.library.images.to_lance().to_table(
+        columns=["image_id", "path"]).to_pylist()
+        if r["path"].endswith("picnic-blanket-park-20240102.jpg"))
+    new_faces = service.faces_in_image(new["image_id"])
+    assert new_faces
+    assert all(f["person_id"] == original for f in new_faces)
