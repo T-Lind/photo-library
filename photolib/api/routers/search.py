@@ -32,6 +32,9 @@ def _filters(req: SearchRequest) -> Filters:
         folder=req.folder,
         camera=req.camera,
         untagged_only=req.untagged_only,
+        near_lat=req.near_lat,
+        near_lon=req.near_lon,
+        near_km=req.near_km,
     )
 
 

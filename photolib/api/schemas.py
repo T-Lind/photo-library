@@ -22,6 +22,9 @@ class SearchRequest(BaseModel):
     folder: Optional[str] = None
     camera: Optional[str] = None
     untagged_only: bool = False
+    near_lat: Optional[float] = Field(None, ge=-90, le=90)
+    near_lon: Optional[float] = Field(None, ge=-180, le=180)
+    near_km: float = Field(1.0, gt=0, le=20000)
     sort: SortOption = "relevance"
     page: int = Field(1, ge=1)
     per_page: Optional[int] = Field(None, ge=1, le=1000)

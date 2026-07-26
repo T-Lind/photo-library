@@ -13,6 +13,10 @@ const state = {
   months: [],
   selectedPeople: [],     // person_ids in the current search
   peopleMode: "all",      // "all" = every selected person must be in the photo
+  untaggedOnly: false,    // photos with faces but no identified people
+  near: null,             // {lat, lon, km} — "photos taken near here"
+  results: [],            // photos currently in the grid, for modal navigation
+  modalIndex: -1,         // position of the open photo within results
   similarTo: null,
   currentPerson: null,
   selectedFaces: new Set(),
@@ -411,23 +415,36 @@ function renderSelectedPeople() {
   const count = state.selectedPeople.length;
   $("peopleButton").textContent = count ? `People (${count})` : "People";
   $("peopleButton").classList.toggle("active-filter", count > 0);
-  if (!count) {
+  const parts = [];
+  if (count > 1) {
+    parts.push(`<span class="chips-label mono">${state.peopleMode === "all" ? "ALL OF" : "ANY OF"}</span>`);
+  }
+  parts.push(...state.selectedPeople.map((id) => {
+    const p = personById(id);
+    return `<button class="chip person-chip" type="button" data-person-id="${id}" title="Remove from search">
+      ${escapeHtml(p ? personLabel(p) : `Person ${id}`)} ×</button>`;
+  }));
+  if (state.untaggedOnly) {
+    parts.push('<button class="chip person-chip" type="button" data-untagged="1" title="Remove filter">no one tagged ×</button>');
+  }
+  if (state.near) {
+    parts.push(`<button class="chip person-chip" type="button" data-near="1" title="Remove filter">near ${state.near.lat.toFixed(4)}, ${state.near.lon.toFixed(4)} ×</button>`);
+  }
+  if (!parts.length) {
     box.classList.add("hidden");
     box.innerHTML = "";
     return;
   }
   box.classList.remove("hidden");
-  const modeNote = count > 1
-    ? `<span class="chips-label mono">${state.peopleMode === "all" ? "ALL OF" : "ANY OF"}</span>` : "";
-  box.innerHTML = modeNote + state.selectedPeople.map((id) => {
-    const p = personById(id);
-    return `<button class="chip person-chip" type="button" data-person-id="${id}" title="Remove from search">
-      ${escapeHtml(p ? personLabel(p) : `Person ${id}`)} ×</button>`;
-  }).join("");
+  box.innerHTML = parts.join("");
   box.querySelectorAll(".person-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
-      state.selectedPeople = state.selectedPeople.filter(
-        (id) => id !== Number(chip.dataset.personId));
+      if (chip.dataset.untagged) state.untaggedOnly = false;
+      else if (chip.dataset.near) state.near = null;
+      else {
+        state.selectedPeople = state.selectedPeople.filter(
+          (id) => id !== Number(chip.dataset.personId));
+      }
       renderSelectedPeople();
       search(1);
     });
@@ -448,6 +465,10 @@ function currentFilters() {
     people_mode: state.selectedPeople.length > 1 ? state.peopleMode : "any",
     camera: $("cameraFilter").value || null,
     has_location: $("locationToggle").checked ? true : null,
+    untagged_only: state.untaggedOnly,
+    near_lat: state.near ? state.near.lat : null,
+    near_lon: state.near ? state.near.lon : null,
+    near_km: state.near ? state.near.km : 1.0,
   };
 }
 
@@ -459,6 +480,8 @@ function clearFilters() {
   $("locationToggle").checked = false;
   $("sortSelect").value = "relevance";
   state.selectedPeople = [];
+  state.untaggedOnly = false;
+  state.near = null;
   renderSelectedPeople();
   state.similarTo = null;
   $("similarBanner").classList.add("hidden");
@@ -534,6 +557,7 @@ function browsePerson(personId) {
 
 function renderPhotos(result) {
   const grid = $("photoGrid");
+  state.results = result.results;
   if (!result.results.length) {
     grid.innerHTML = '<div class="empty">No photos matched. Broaden the description, widen the dates, or remove a person filter.</div>';
   } else {
@@ -608,6 +632,8 @@ function renderTimeline() {
 // ---------------------------------------------------------------------------
 
 async function openPhoto(imageId, filename = "") {
+  state.modalIndex = state.results.findIndex((r) => r.image_id === Number(imageId));
+  updateModalNav();
   $("photoModal").classList.remove("hidden");
   $("modalImage").src = `${API}/images/${imageId}`;
   $("modalName").textContent = filename || "Loading…";
@@ -645,14 +671,25 @@ function renderExif(details) {
   add("size", details.width && details.height ? `${details.width} × ${details.height}` : "");
   add("file", details.file_size ? formatBytes(details.file_size) : "");
   add("folder", details.folder);
-  if (details.lat != null && details.lon != null) {
-    add("location", `${details.lat.toFixed(5)}, ${details.lon.toFixed(5)}`);
-  }
   add("place", details.place);
-  $("modalDetailsBtn").classList.toggle("hidden", !rows.length);
+  $("modalDetailsBtn").classList.toggle("hidden",
+    !rows.length && details.lat == null);
+  const hasGps = details.lat != null && details.lon != null;
   $("modalExif").innerHTML = rows.map(([k, v]) =>
     `<div class="exif-row"><span class="exif-key mono">${escapeHtml(k.toUpperCase())}</span><span class="exif-val">${escapeHtml(v)}</span></div>`
-  ).join("");
+  ).join("") + (hasGps
+    ? `<div class="exif-row"><span class="exif-key mono">LOCATION</span>
+        <button class="exif-near" type="button" id="exifNear">${details.lat.toFixed(5)}, ${details.lon.toFixed(5)} · photos near here</button></div>`
+    : "");
+  if (hasGps) {
+    $("exifNear").addEventListener("click", () => {
+      state.near = { lat: details.lat, lon: details.lon, km: 1.0 };
+      closePhoto();
+      setView("photos");
+      renderSelectedPeople();
+      search(1);
+    });
+  }
 }
 
 function renderModalFaces(details) {
@@ -704,6 +741,45 @@ function closePhoto() {
   $("modalImage").removeAttribute("src");
 }
 
+function updateModalNav() {
+  const i = state.modalIndex;
+  const inResults = i >= 0 && state.results.length > 0;
+  const pages = Math.max(1, Math.ceil(state.total / state.perPage));
+  const canPage = !state.similarTo;
+  const hasPrev = inResults && (i > 0 || (canPage && state.page > 1));
+  const hasNext = inResults && (i < state.results.length - 1
+    || (canPage && state.page < pages));
+  $("modalPrev").classList.toggle("hidden", !hasPrev);
+  $("modalNext").classList.toggle("hidden", !hasNext);
+}
+
+async function navigatePhoto(delta) {
+  const i = state.modalIndex;
+  if (i < 0 || !state.results.length) return;
+  const next = i + delta;
+  if (next >= 0 && next < state.results.length) {
+    const photo = state.results[next];
+    openPhoto(photo.image_id, photo.filename || "");
+    return;
+  }
+  // Walked off the page — fetch the neighbouring one and keep going.
+  if (state.similarTo) return;
+  const pages = Math.max(1, Math.ceil(state.total / state.perPage));
+  if (delta > 0 && state.page < pages) {
+    await search(state.page + 1);
+    if (state.results.length) {
+      const photo = state.results[0];
+      openPhoto(photo.image_id, photo.filename || "");
+    }
+  } else if (delta < 0 && state.page > 1) {
+    await search(state.page - 1);
+    if (state.results.length) {
+      const photo = state.results[state.results.length - 1];
+      openPhoto(photo.image_id, photo.filename || "");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // People view
 // ---------------------------------------------------------------------------
@@ -750,8 +826,36 @@ async function loadPeopleView() {
     await loadPeople();
     renderPeopleGrid();
     loadMergeSuggestions();
+    loadUntagged();
   } finally {
     endLoad();
+  }
+}
+
+async function loadUntagged() {
+  try {
+    const body = await request("/search", {
+      method: "POST",
+      body: JSON.stringify({ untagged_only: true, sort: "date_desc", per_page: 12 }),
+    });
+    const panel = $("untaggedPanel");
+    if (!body.total) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    $("untaggedCopy").textContent =
+      `${body.total.toLocaleString()} ${body.total === 1 ? "photo" : "photos"} where a face was spotted but nobody has been identified.`;
+    $("untaggedRow").innerHTML = body.results.map((photo) => `
+      <button class="dupe-thumb" type="button" data-image-id="${photo.image_id}" data-filename="${escapeHtml(photo.filename || "")}">
+        <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="">
+      </button>`).join("");
+    $("untaggedRow").querySelectorAll(".dupe-thumb").forEach((thumb) => {
+      thumb.addEventListener("click", () =>
+        openPhoto(Number(thumb.dataset.imageId), thumb.dataset.filename));
+    });
+  } catch {
+    $("untaggedPanel").classList.add("hidden");
   }
 }
 
@@ -762,31 +866,83 @@ function renderPeopleGrid() {
     return;
   }
   grid.innerHTML = state.people.map((person) => `
-    <button class="person-tile" type="button" data-person-id="${person.person_id}">
+    <div class="person-tile" tabindex="0" role="button" data-person-id="${person.person_id}"
+         aria-label="Open ${escapeHtml(personLabel(person))}">
       ${coverHtml(person, "lg")}
-      <span class="person-tile-name">${escapeHtml(personLabel(person))}</span>
+      <span class="person-tile-name" title="Click to rename">${escapeHtml(personLabel(person))}</span>
       <span class="person-tile-count mono">${person.photo_count} ${person.photo_count === 1 ? "PHOTO" : "PHOTOS"}</span>
-    </button>
+    </div>
   `).join("");
   grid.querySelectorAll(".person-tile").forEach((tile) => {
-    tile.addEventListener("click", () => openPerson(Number(tile.dataset.personId)));
+    const personId = Number(tile.dataset.personId);
+    tile.addEventListener("click", () => openPerson(personId));
+    tile.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && event.target === tile) openPerson(personId);
+    });
+    tile.querySelector(".person-tile-name").addEventListener("click", (event) => {
+      event.stopPropagation();
+      startInlineRename(tile, personId);
+    });
   });
+}
+
+function startInlineRename(tile, personId) {
+  const person = personById(personId);
+  const span = tile.querySelector(".person-tile-name");
+  if (!person || !span || tile.querySelector(".tile-rename")) return;
+  const input = document.createElement("input");
+  input.className = "field tile-rename";
+  input.maxLength = 200;
+  input.value = person.name || "";
+  input.placeholder = "Name…";
+  input.setAttribute("aria-label", "Person name");
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  input.addEventListener("click", (event) => event.stopPropagation());
+
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    const name = input.value.trim();
+    if (save && name && name !== person.name) {
+      try {
+        await request(`/people/${personId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name }),
+        });
+        await loadPeople();
+        renderSelectedPeople();
+      } catch (error) {
+        showError(`Rename failed: ${error.message}`);
+      }
+    }
+    renderPeopleGrid();
+  };
+  input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") finish(true);
+    if (event.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 
 async function loadMergeSuggestions() {
   const panel = $("mergeSuggestPanel");
   const list = $("mergeSuggestList");
+  panel.classList.remove("hidden");
   try {
-    const body = await request("/people/merge-suggestions?limit=30");
+    // A low floor keeps the section alive with long-shot candidates; the
+    // similarity badge tells the user how seriously to take each one.
+    const body = await request("/people/merge-suggestions?limit=12&min_similarity=0.25");
     const dismissed = dismissedMerges();
     const pairs = (body.suggestions || []).filter(
       (s) => !dismissed.has(mergeKey(s.source.person_id, s.target.person_id)));
     if (!pairs.length) {
-      panel.classList.add("hidden");
-      list.innerHTML = "";
+      list.innerHTML = '<div class="empty slim-empty">Nothing left to review — no two people look alike right now.</div>';
       return;
     }
-    panel.classList.remove("hidden");
     list.innerHTML = pairs.map((s, i) => `
       <div class="merge-card">
         <div class="merge-faces">
@@ -827,7 +983,7 @@ async function loadMergeSuggestions() {
       });
     });
   } catch {
-    panel.classList.add("hidden");
+    list.innerHTML = '<div class="empty slim-empty">Merge suggestions are unavailable right now.</div>';
   }
 }
 
@@ -894,11 +1050,18 @@ async function loadPersonFaces(personId) {
       return;
     }
     $("personFaces").innerHTML = faces.map((f) => `
-      <button class="face-tile" type="button" data-face-id="${f.face_id}" title="Quality ${Math.round((f.quality || 0) * 100)}%${f.confirmed ? " · confirmed by you" : ""}">
+      <button class="face-tile" type="button" data-face-id="${f.face_id}" data-image-id="${f.image_id}" title="Quality ${Math.round((f.quality || 0) * 100)}%${f.confirmed ? " · confirmed by you" : ""} — click to select, ↗ opens the photo">
         <img class="face-img" loading="lazy" src="${faceCropUrl(f.face_id)}" alt="">
         ${f.confirmed ? '<span class="face-badge" aria-label="Confirmed">✓</span>' : ""}
+        <span class="open-photo mono" data-open="${f.image_id}" title="Open the photo this face is from" role="button">↗</span>
       </button>
     `).join("");
+    $("personFaces").querySelectorAll(".open-photo").forEach((corner) => {
+      corner.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openPhoto(Number(corner.dataset.open));
+      });
+    });
     $("personFaces").querySelectorAll(".face-tile").forEach((tile) => {
       tile.addEventListener("click", () => {
         const id = Number(tile.dataset.faceId);
@@ -1205,8 +1368,8 @@ async function loadDupes() {
   list.innerHTML = '<div class="empty slim-empty">Comparing every photo…</div>';
   startLoad();
   try {
-    const body = await request("/duplicates");
-    const groups = body || [];
+    const body = await request("/admin/duplicates");
+    const groups = body.groups || [];
     if (!groups.length) {
       list.innerHTML = '<div class="empty slim-empty">No duplicates found — your library is tidy.</div>';
       return;
@@ -1337,6 +1500,14 @@ async function init() {
   });
   $("modalDetailsBtn").addEventListener("click", () =>
     $("modalExif").classList.toggle("hidden"));
+  $("modalPrev").addEventListener("click", () => navigatePhoto(-1));
+  $("modalNext").addEventListener("click", () => navigatePhoto(1));
+  $("untaggedReview").addEventListener("click", () => {
+    state.untaggedOnly = true;
+    setView("photos");
+    renderSelectedPeople();
+    search(1);
+  });
 
   $("personClose").addEventListener("click", closePerson);
   $("personModal").addEventListener("click", (event) => {
@@ -1363,11 +1534,17 @@ async function init() {
   $("findDupes").addEventListener("click", loadDupes);
 
   document.addEventListener("keydown", (event) => {
+    const photoOpen = !$("photoModal").classList.contains("hidden");
     if (event.key === "Escape") {
-      togglePeoplePanel(false);
-      closePhoto();
-      closePerson();
+      // Close only the topmost layer, so backing out of a photo opened
+      // from a person still leaves the person open.
+      if (photoOpen) closePhoto();
+      else if (!$("personModal").classList.contains("hidden")) closePerson();
+      else togglePeoplePanel(false);
+      return;
     }
+    if (photoOpen && event.key === "ArrowRight") navigatePhoto(1);
+    if (photoOpen && event.key === "ArrowLeft") navigatePhoto(-1);
   });
 
   try {

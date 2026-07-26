@@ -163,6 +163,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 
 /* -- modals ------------------------------------------------------------------------------ */
 .modal { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 26px; background: rgba(6,7,9,.9); backdrop-filter: blur(10px); }
+/* The photo viewer must layer above the person panel: a face's "open the
+   photo" action shows the photo on top, and Escape peels layers in order. */
+#photoModal { z-index: 120; }
+.modal-nav { position: absolute; z-index: 2; top: 50%; transform: translateY(-50%); width: 44px; height: 64px; padding: 0; border-radius: 10px; color: #fff; border: 1px solid rgba(255,255,255,.18); background: rgba(0,0,0,.55); font-size: 26px; line-height: 1; }
+.modal-nav:hover { background: rgba(0,0,0,.75); border-color: var(--accent); }
+.modal-nav.prev { left: 12px; }
+.modal-nav.next { right: 12px; }
 .modal-card { position: relative; width: min(1240px, 100%); max-height: 94vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #0b0c0e; }
 .modal-card > img { display: block; width: 100%; max-height: 72vh; object-fit: contain; background: #000; }
 .modal-close { position: absolute; z-index: 2; top: 12px; right: 12px; width: 40px; height: 40px; padding: 0; border-radius: 50%; color: #fff; border: 1px solid rgba(255,255,255,.22); background: rgba(0,0,0,.6); font-size: 20px; }
@@ -196,6 +203,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .face-tile.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(111,160,255,.25); }
 .face-tile.unknown { opacity: .75; cursor: default; }
 .face-badge { position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: var(--ok); color: #06251a; font-size: 10px; font-weight: 800; }
+.face-tile .open-photo { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; opacity: 0; transition: opacity .15s ease; }
+.face-tile:hover .open-photo { opacity: 1; }
+.face-tile .open-photo:hover { background: var(--accent); color: var(--accent-ink); }
 .face-tile.suggest { width: 76px; height: 76px; border-style: dashed; }
 .suggest-actions { position: absolute; inset: auto 0 0; display: flex; justify-content: space-between; padding: 3px; background: linear-gradient(transparent, rgba(0,0,0,.75)); }
 .mini-btn { width: 25px; height: 25px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: none; font-size: 12px; font-weight: 800; }
@@ -205,8 +215,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 /* -- people grid ----------------------------------------------------------------------------- */
 .people-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; margin-top: 16px; }
 .person-tile { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 18px 10px 14px; border: 1px solid var(--line-soft); border-radius: var(--radius-lg); background: var(--surface); text-align: center; }
+.person-tile { cursor: pointer; }
 .person-tile:hover { border-color: var(--accent); }
-.person-tile-name { margin-top: 7px; font-weight: 600; font-size: 13.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-tile-name { margin-top: 7px; font-weight: 600; font-size: 13.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px dashed transparent; }
+.person-tile-name:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.tile-rename { margin-top: 5px; min-height: 30px; max-width: 100%; padding: 0 8px; font-size: 13px; text-align: center; }
 .person-tile-count { color: var(--faint); }
 .skeleton-tile { pointer-events: none; }
 .skeleton-line { width: 60%; height: 10px; margin-top: 10px; border-radius: 5px; background: var(--surface-2); }
@@ -264,6 +277,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .dupe-thumb { width: 62px; height: 62px; flex-shrink: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .dupe-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .dupe-more { color: var(--faint); padding: 0 6px; }
+
+.thumb-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.exif-near { padding: 0; border: none; background: none; color: var(--accent); font-size: 13px; text-align: left; text-decoration: underline dashed; text-underline-offset: 3px; }
+.exif-near:hover { color: #8db4ff; }
 
 .model-lines { display: flex; flex-direction: column; gap: 6px; }
 .model-line { display: flex; justify-content: space-between; gap: 14px; padding: 8px 12px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface-2); color: var(--muted); }

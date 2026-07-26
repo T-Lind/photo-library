@@ -42,13 +42,18 @@ class Filters:
     folder: Optional[str] = None
     camera: Optional[str] = None
     untagged_only: bool = False
+    # "Photos taken near here": centre + radius in km. All three or nothing.
+    near_lat: Optional[float] = None
+    near_lon: Optional[float] = None
+    near_km: float = 1.0
 
     @property
     def is_empty(self) -> bool:
         return (self.start_date is None and self.end_date is None
                 and not self.people_ids and self.has_location is None
                 and self.has_faces is None and not self.folder
-                and not self.camera and not self.untagged_only)
+                and not self.camera and not self.untagged_only
+                and self.near_lat is None)
 
 
 class LibraryIndex:
@@ -64,6 +69,7 @@ class LibraryIndex:
         self.taken_ts = np.zeros(0, dtype=np.float64)     # NaN = unknown date
         self.added_ts = np.zeros(0, dtype=np.float64)
         self.lat = np.zeros(0, dtype=np.float64)
+        self.lon = np.zeros(0, dtype=np.float64)
         self.face_count = np.zeros(0, dtype=np.int32)
         self.folders: List[str] = []
         self.cameras: List[str] = []
@@ -100,6 +106,7 @@ class LibraryIndex:
         self.taken_ts = _timestamps(table["taken_at"])
         self.added_ts = _timestamps(table["added_at"])
         self.lat = _floats(table["lat"])
+        self.lon = _floats(table["lon"])
         self.face_count = np.nan_to_num(
             _floats(table["face_count"]), nan=0.0).astype(np.int32)
         self.folders = [f or "" for f in table["folder"].to_pylist()]
@@ -179,6 +186,17 @@ class LibraryIndex:
         if filters.has_location is not None:
             located = ~np.isnan(self.lat)
             mask &= located if filters.has_location else ~located
+
+        if filters.near_lat is not None and filters.near_lon is not None:
+            # Equirectangular approximation — exact enough at photo-radius
+            # scales, and it vectorises to two multiplies per row.
+            km_per_deg = 111.32
+            dlat = (self.lat - filters.near_lat) * km_per_deg
+            dlon = ((self.lon - filters.near_lon) * km_per_deg
+                    * np.cos(np.radians(filters.near_lat)))
+            with np.errstate(invalid="ignore"):
+                within = (dlat * dlat + dlon * dlon) <= filters.near_km ** 2
+            mask &= np.nan_to_num(within, nan=False).astype(bool)
 
         if filters.has_faces is not None:
             has = self.face_count > 0

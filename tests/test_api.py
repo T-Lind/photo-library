@@ -446,3 +446,26 @@ def test_camera_filter_and_listing(client, indexed_service):
 
     none = client.post(f"{API}/search", json={"camera": "NoSuchCam"}).json()
     assert none["total"] == 0
+
+
+def test_near_location_filter(client, indexed_service):
+    """'Photos taken near here' returns only photos inside the radius."""
+    results = client.post(f"{API}/search", json={"per_page": 3}).json()["results"]
+    here, near, far = (r["image_id"] for r in results[:3])
+    lib = indexed_service.library
+    lib.images.update(where=f"image_id = {here}",
+                      values={"lat": 30.6280, "lon": -96.3344})
+    lib.images.update(where=f"image_id = {near}",
+                      values={"lat": 30.6300, "lon": -96.3360})  # ~300 m away
+    lib.images.update(where=f"image_id = {far}",
+                      values={"lat": 29.7604, "lon": -95.3698})  # ~150 km away
+    indexed_service.index.invalidate()
+
+    hits = client.post(f"{API}/search", json={
+        "near_lat": 30.6280, "near_lon": -96.3344, "near_km": 1.0}).json()
+    ids = {r["image_id"] for r in hits["results"]}
+    assert ids == {here, near}
+
+    wide = client.post(f"{API}/search", json={
+        "near_lat": 30.6280, "near_lon": -96.3344, "near_km": 500}).json()
+    assert {here, near, far} <= {r["image_id"] for r in wide["results"]}

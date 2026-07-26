@@ -125,11 +125,18 @@
         </div>
 
         <div id="peopleView" class="hidden">
-          <section id="mergeSuggestPanel" class="panel hidden">
+          <section id="mergeSuggestPanel" class="panel">
             <div class="panel-head">
-              <div><h2>Same person twice?</h2><p>These pairs look alike. Merging keeps every photo — and future scans recognise the merged person.</p></div>
+              <div><h2>Merge review</h2><p>Likeliest pairs first, long shots included. Merging keeps every photo — and future scans recognise the merged person. Tip: click a person's name below to rename them right there.</p></div>
             </div>
             <div id="mergeSuggestList" class="merge-cards"></div>
+          </section>
+          <section id="untaggedPanel" class="panel hidden">
+            <div class="panel-head">
+              <div><h2>No one tagged yet</h2><p id="untaggedCopy">Photos where a face was spotted but nobody has been identified.</p></div>
+              <button id="untaggedReview" class="btn" type="button">Review in Photos</button>
+            </div>
+            <div id="untaggedRow" class="thumb-row"></div>
           </section>
           <div id="peopleGrid" class="people-grid"></div>
         </div>
@@ -172,6 +179,8 @@
   <div id="photoModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Photo viewer">
     <div class="modal-card">
       <button id="modalClose" class="modal-close" type="button" aria-label="Close photo">×</button>
+      <button id="modalPrev" class="modal-nav prev hidden" type="button" aria-label="Previous photo">‹</button>
+      <button id="modalNext" class="modal-nav next hidden" type="button" aria-label="Next photo">›</button>
       <img id="modalImage" alt="Full-size photo">
       <div class="modal-info">
         <div class="modal-text">
