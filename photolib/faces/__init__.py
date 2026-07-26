@@ -48,6 +48,7 @@ def build_face_backend(settings: Optional[Settings] = None) -> FaceBackend:
         min_det_score=s.face_min_det_score,
         min_face_size=s.face_min_size,
         device=s.device,
+        model_root=s.face_model_root,
     )
 
 

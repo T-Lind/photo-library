@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from typing import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from .. import __version__
 from ..config import Settings, get_settings
+from ..webui import mount_web_ui
 from .deps import get_service
 from .routers import admin, faces, images, people, search
 
@@ -27,7 +29,16 @@ own machine with no network calls.
 """
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None,
+               on_ready: Callable[[], None] | None = None) -> FastAPI:
+    """Build the application.
+
+    ``on_ready`` runs once the server has finished starting up. The desktop
+    shell uses it to announce the port it bound. It must go through the
+    lifespan rather than ``@app.on_event("startup")``, because Starlette
+    ignores ``on_event`` handlers entirely when a lifespan is supplied — a
+    silent no-op that is very easy to miss.
+    """
     settings = settings or get_settings()
     settings.ensure_dirs()
 
@@ -45,6 +56,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("No library indexed yet at %s", settings.db_uri)
         except Exception as exc:
             logger.warning("Startup warm-up skipped: %s", exc)
+
+        if on_ready is not None:
+            try:
+                on_ready()
+            except Exception:
+                logger.exception("Startup callback failed")
         yield
 
     app = FastAPI(
@@ -88,8 +105,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    faces.router, admin.router):
         app.include_router(router, prefix=API_PREFIX)
 
-    @app.get("/")
-    def root():
+    @app.get("/api")
+    def api_root():
         return {
             "name": "photolib",
             "version": __version__,
@@ -97,7 +114,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "api": API_PREFIX,
         }
 
+    # Mounted last: a mount at "/" would otherwise shadow the API routes.
+    # When a build is present the UI and API share an origin, so the browser
+    # never makes a cross-origin request and CORS stops mattering.
+    web_dir = mount_web_ui(app, API_PREFIX)
+    if web_dir is None:
+        @app.get("/")
+        def root():
+            return {
+                "name": "photolib",
+                "version": __version__,
+                "docs": "/docs",
+                "api": API_PREFIX,
+                "web_ui": "not bundled — run the frontend separately",
+            }
+
     return app
 
 
-app = create_app()
+_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """Build the module-level ``app`` on first access, not on import.
+
+    ``uvicorn photolib.api.app:app`` needs a module attribute, but building
+    it eagerly meant anything that merely imported this module paid for a
+    second application — including the desktop launcher, which then mounted
+    the web UI twice.
+    """
+    if name == "app":
+        global _app
+        if _app is None:
+            _app = create_app()
+        return _app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

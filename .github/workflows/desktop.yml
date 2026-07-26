@@ -1,0 +1,200 @@
+name: desktop
+
+# Builds the standalone desktop app. This is where the Windows installer is
+# actually produced and proven to build — the development environment for
+# this project is Linux, so CI is the only place a Windows artifact is real
+# rather than theoretical.
+#
+# Run it from the Actions tab, or push a v* tag to attach installers to a
+# release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Embedding model to export
+        default: google/siglip2-base-patch16-224
+      quantize:
+        description: Also emit int8 graphs (smaller, slightly lower quality)
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+env:
+  MODEL: ${{ github.event.inputs.model || 'google/siglip2-base-patch16-224' }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Export the model once and share it with every platform build. Exporting
+  # is deterministic and platform-independent, and it downloads ~2 GB, so
+  # doing it once rather than per-OS is worth the extra job.
+  # ---------------------------------------------------------------------
+  export-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the export toolchain
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-export.txt pillow numpy
+
+      - name: Export to ONNX
+        run: |
+          python tools/export_onnx.py --model "$MODEL" --out models/siglip2-base \
+            ${{ github.event.inputs.quantize == 'true' && '--quantize' || '' }}
+
+      # export_onnx.py fails the build if the exported graph drifts from
+      # PyTorch, or if the NumPy runtime stops reproducing the 🤗 pipeline.
+      - name: Report size
+        run: du -sh models/siglip2-base && ls -la models/siglip2-base
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnx-model
+          path: models/siglip2-base
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  desktop:
+    needs: [export-model]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            exe: .exe
+            bundles: msi
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            exe: ""
+            bundles: dmg
+          - os: ubuntu-22.04
+            triple: x86_64-unknown-linux-gnu
+            exe: ""
+            bundles: appimage,deb
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: onnx-model
+          path: models/siglip2-base
+
+
+      - name: Install runtime dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # This lock set has no torch or transformers; the frozen app
+          # runs entirely on the pinned, Windows-tested ONNX Runtime.
+          pip install -r requirements-desktop.txt
+
+      - name: Build the sidecar
+        shell: bash
+        run: pyinstaller packaging/photolib.spec --noconfirm --clean
+
+      - name: Smoke-test the sidecar
+        shell: bash
+        run: |
+          # Start it, wait for the readiness line, then check it actually
+          # serves both the UI and the API. A binary that builds but does not
+          # run is worse than a failed build.
+          ./dist/photolib-server/photolib-server${{ matrix.exe }} \
+            --no-browser --port 8137 --data-dir "$PWD/smoke-data" > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            grep -q "PHOTOLIB_READY" server.log && break
+            sleep 2
+          done
+          cat server.log
+          grep -q "PHOTOLIB_READY" server.log || { echo "server never became ready"; exit 1; }
+          curl -fsS http://127.0.0.1:8137/api/v1/health
+          curl -fsS -o /dev/null http://127.0.0.1:8137/
+          curl -fsS http://127.0.0.1:8137/api/v1/admin/models
+
+      - name: Verify the packaged model
+        shell: bash
+        run: |
+          # Prove the frozen binary's NumPy preprocessing still reproduces
+          # the 🤗 pipeline, using the golden vectors from the export.
+          ./dist/photolib-server/photolib-server${{ matrix.exe }} --verify-model --data-dir "$PWD/verify-data"
+
+      - name: Stage the sidecar for Tauri
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          # Tauri resolves sidecars by target-triple suffix.
+          cp -r dist/photolib-server/* desktop/src-tauri/binaries/
+          mv "desktop/src-tauri/binaries/photolib-server${{ matrix.exe }}" \
+             "desktop/src-tauri/binaries/photolib-server-${{ matrix.triple }}${{ matrix.exe }}"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Build the installer
+        working-directory: desktop
+        run: |
+          npm install
+          npx tauri build --bundles "${{ matrix.bundles }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photolib-${{ matrix.os }}
+          path: |
+            desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/**/*.dmg
+            desktop/src-tauri/target/release/bundle/**/*.AppImage
+            desktop/src-tauri/target/release/bundle/**/*.deb
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  release:
+    needs: desktop
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: true
+          body: |
+            Download the installer for your platform below.
+
+            The image/text model is bundled, so search works offline from the
+            first launch. Face recognition weights (~288 MB) are downloaded
+            once, on first use, from the InsightFace project's own release
+            page — they are published for non-commercial research use and so
+            are not redistributed here.
+
+            After that first download, the application makes no network
+            requests at all.

@@ -18,3 +18,10 @@ cropped_faces*/
 ex-images/
 sm-images/
 256-images/
+
+# Packaging outputs
+build/
+dist/
+models/
+web/
+desktop/node_modules/

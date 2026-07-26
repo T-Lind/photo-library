@@ -8,12 +8,47 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...config import get_settings
+from ...folder_picker import choose_photo_folder
 from ...service import PhotoService
 from ..deps import get_service, translate_errors
-from ..schemas import IndexRequest, JobOut, ReclusterRequest
+from ..schemas import IndexRequest, JobOut, ReclusterRequest, RootRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
+
+
+@router.post("/admin/select-folder")
+def select_folder():
+    """Open the operating system's folder picker for the local desktop UI."""
+    return choose_photo_folder().__dict__
+
+
+@router.get("/admin/roots")
+def list_roots(service: PhotoService = Depends(get_service)):
+    """Every folder the user has added to the library, with photo counts."""
+    try:
+        return {"roots": service.list_roots()}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/admin/roots")
+def add_root(req: RootRequest, service: PhotoService = Depends(get_service)):
+    """Remember a source folder (indexing it is a separate, explicit step)."""
+    try:
+        return {"roots": service.add_root(req.folder)}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.delete("/admin/roots")
+def remove_root(path: str = Query(..., description="Folder to forget"),
+                service: PhotoService = Depends(get_service)):
+    """Forget a source folder. Photos already indexed from it stay."""
+    try:
+        return {"roots": service.remove_root(path)}
+    except Exception as exc:
+        raise translate_errors(exc)
 
 
 @router.get("/stats")
@@ -106,6 +141,31 @@ def cancel_job(job_id: str, service: PhotoService = Depends(get_service)):
         raise HTTPException(status_code=404,
                             detail="Job not found or already finished")
     return {"cancelled": job_id}
+
+
+@router.get("/admin/models")
+def models(service: PhotoService = Depends(get_service)):
+    """Which model weights are present, and what still needs downloading.
+
+    The desktop app polls this on launch so a first run can show a download
+    step instead of appearing to hang the first time someone searches.
+    """
+    try:
+        return service.model_status()
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/admin/models/fetch", response_model=JobOut)
+def fetch_models(service: PhotoService = Depends(get_service)):
+    """Download missing model weights in the background."""
+    try:
+        job = service.start_fetch_models_job()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise translate_errors(exc)
+    return JobOut(**job.to_dict())
 
 
 @router.get("/admin/duplicates")

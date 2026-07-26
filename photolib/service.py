@@ -571,6 +571,113 @@ class PhotoService:
             self.library, int(person_id), self.face_backend.dim,
             self.settings.face_match_threshold, limit)
 
+    def person_faces(self, person_id: int, limit: int = 200) -> List[dict]:
+        """A person's faces, best quality first — the person review view."""
+        self.get_person(person_id)
+        rows = (
+            self.library.faces.search()
+            .where(f"person_id = {int(person_id)}")
+            .select(["face_id", "image_id", "x", "y", "w", "h",
+                     "quality", "confirmed"])
+            .limit(limit)
+            .to_arrow()
+            .to_pylist()
+        )
+        rows.sort(key=lambda r: float(r["quality"] or 0.0), reverse=True)
+        return [{
+            "face_id": int(r["face_id"]),
+            "image_id": int(r["image_id"]),
+            "bbox": [int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])],
+            "quality": round(float(r["quality"]), 3),
+            "confirmed": bool(r["confirmed"]),
+        } for r in rows]
+
+    def merge_suggestions(self, limit: int = 20,
+                          min_similarity: Optional[float] = None) -> List[dict]:
+        """Pairs of people who are probably the same person.
+
+        Clustering errs on the side of splitting (merging two strangers is
+        worse than showing one person twice), so a real library accumulates
+        split identities. Comparing the stored centroids finds them; a pair
+        is vetoed when the two people appear together in a photo, because
+        two faces in the same frame are almost never the same person.
+        """
+        self.require_ready()
+        if min_similarity is None:
+            min_similarity = self.settings.face_cluster_threshold
+
+        try:
+            rows = self.library.people.to_lance().to_table(
+                columns=["person_id", "name", "centroid", "hidden"]).to_pylist()
+        except Exception:
+            return []
+
+        counts = self.index.person_counts()
+        people = []
+        for r in rows:
+            if r["hidden"]:
+                continue
+            centroid = np.asarray(r["centroid"] or [], dtype=np.float32)
+            if centroid.size == 0 or float(np.linalg.norm(centroid)) < 1e-6:
+                continue
+            people.append({
+                "person_id": int(r["person_id"]),
+                "name": r["name"] or "",
+                "centroid": centroid,
+                "photo_count": counts.get(int(r["person_id"]), 0),
+            })
+        if len(people) < 2:
+            return []
+
+        matrix = np.stack([p["centroid"] for p in people])
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.maximum(norms, 1e-12)
+        sims = matrix @ matrix.T
+
+        covers = self.people_by_id()
+        pairs = []
+        for i in range(len(people)):
+            for j in range(i + 1, len(people)):
+                similarity = float(sims[i, j])
+                if similarity < min_similarity:
+                    continue
+                if self._people_cooccur(people[i]["person_id"],
+                                        people[j]["person_id"]):
+                    continue
+                pairs.append((similarity, people[i], people[j]))
+
+        pairs.sort(key=lambda t: t[0], reverse=True)
+
+        def public(p: dict) -> dict:
+            info = covers.get(p["person_id"], {})
+            return {
+                "person_id": p["person_id"],
+                "name": p["name"],
+                "photo_count": p["photo_count"],
+                "face_count": info.get("face_count", 0),
+                "cover_face_id": info.get("cover_face_id", -1),
+            }
+
+        out = []
+        for similarity, a, b in pairs[:limit]:
+            # Keep the named identity; failing that, the better-established one.
+            a_keeps = (bool(a["name"]), a["photo_count"], -a["person_id"])
+            b_keeps = (bool(b["name"]), b["photo_count"], -b["person_id"])
+            target, source = (a, b) if a_keeps >= b_keeps else (b, a)
+            out.append({
+                "source": public(source),
+                "target": public(target),
+                "similarity": round(similarity, 4),
+            })
+        return out
+
+    def _people_cooccur(self, person_a: int, person_b: int) -> bool:
+        rows_a = self.index._rows_by_person.get(int(person_a))
+        rows_b = self.index._rows_by_person.get(int(person_b))
+        if rows_a is None or rows_b is None:
+            return False
+        return bool(np.intersect1d(rows_a, rows_b, assume_unique=False).size)
+
     # -- person bookkeeping ---------------------------------------------
     def _create_person(self, name: str = "") -> int:
         import pyarrow as pa
@@ -759,6 +866,83 @@ class PhotoService:
         return sorted(({"folder": f, "count": c} for f, c in counts.items()),
                       key=lambda d: d["folder"])
 
+    def cameras(self) -> List[dict]:
+        """Distinct camera models with counts — drives the camera filter."""
+        self.require_ready()
+        self.index.ensure_fresh()
+        counts: Dict[str, int] = {}
+        for camera in self.index.cameras:
+            if camera:
+                counts[camera] = counts.get(camera, 0) + 1
+        return sorted(({"camera": c, "count": n} for c, n in counts.items()),
+                      key=lambda d: (-d["count"], d["camera"]))
+
+    # ------------------------------------------------------------------
+    # Source folders (library roots)
+    # ------------------------------------------------------------------
+    # The library itself only knows folders that contain photos. The roots
+    # file remembers what the *user* chose to index — a Pictures folder, an
+    # external drive, a scattered project directory — so the UI can offer
+    # "rescan everything" without asking them to retype paths.
+
+    def _roots_file(self) -> Path:
+        return Path(self.settings.state_dir) / "roots.json"
+
+    def _read_roots(self) -> List[str]:
+        import json
+
+        try:
+            data = json.loads(self._roots_file().read_text(encoding="utf-8"))
+            roots = data.get("roots", [])
+            return [str(r) for r in roots if isinstance(r, str)]
+        except (OSError, ValueError):
+            return []
+
+    def _write_roots(self, roots: List[str]) -> None:
+        import json
+
+        path = self._roots_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"roots": roots}, indent=2), encoding="utf-8")
+
+    def list_roots(self) -> List[dict]:
+        roots = self._read_roots()
+        counts: Dict[str, int] = {}
+        if self.ready:
+            self.index.ensure_fresh()
+            for root in roots:
+                prefix = root.replace("\\", "/").rstrip("/")
+                counts[root] = sum(
+                    1 for folder in self.index.folders
+                    if (n := folder.replace("\\", "/").rstrip("/")) == prefix
+                    or n.startswith(prefix + "/"))
+        return [{
+            "path": root,
+            "exists": Path(root).is_dir(),
+            "photo_count": counts.get(root, 0),
+        } for root in roots]
+
+    def add_root(self, folder: str) -> List[dict]:
+        root = Path(folder).expanduser()
+        if not root.is_dir():
+            raise ValueError(f"{folder} is not a directory")
+        resolved = str(root.resolve())
+        roots = self._read_roots()
+        # Windows paths are case-insensitive; don't list one drive twice.
+        if resolved.lower() not in [r.lower() for r in roots]:
+            roots.append(resolved)
+            self._write_roots(roots)
+        return self.list_roots()
+
+    def remove_root(self, folder: str) -> List[dict]:
+        """Forget a source folder. Its photos stay in the library."""
+        target = str(Path(folder).expanduser()).lower()
+        resolved = str(Path(folder).expanduser().resolve()).lower()
+        roots = [r for r in self._read_roots()
+                 if r.lower() not in (target, resolved)]
+        self._write_roots(roots)
+        return self.list_roots()
+
     # ------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------
@@ -769,6 +953,10 @@ class PhotoService:
         root = Path(folder).expanduser()
         if not root.is_dir():
             raise ValueError(f"{folder} is not a directory")
+        try:
+            self.add_root(str(root))
+        except Exception:  # remembering the root must never block indexing
+            logger.warning("Could not record %s as a library root", root)
 
         def run(progress) -> dict:
             indexer = Indexer(self.library, self.settings, self.embedder,
@@ -799,6 +987,35 @@ class PhotoService:
             return result
 
         return self.jobs.submit("recluster", run)
+
+    def model_status(self) -> dict:
+        from .models import status
+
+        return status(self.settings)
+
+    def start_fetch_models_job(self):
+        """Download any missing model weights, with progress.
+
+        Only the face model is ever fetched — the image/text model ships with
+        the application. The desktop app calls this on first launch so the
+        download is a visible, cancellable step rather than a silent stall
+        the first time someone searches.
+        """
+        from .models import ensure_face_model
+
+        def run(progress) -> dict:
+            def on_bytes(name: str, done: int, total: int) -> None:
+                progress("downloading", done, total, {"model": name})
+
+            progress("downloading", 0, 1, {})
+            path = ensure_face_model(self.settings, on_bytes)
+            # Drop any cached backend so the next call picks up the weights.
+            self._faces = None
+            return {"installed": str(path), **status(self.settings)}
+
+        from .models import status
+
+        return self.jobs.submit("fetch_models", run)
 
     def start_compact_job(self):
         def run(progress) -> dict:

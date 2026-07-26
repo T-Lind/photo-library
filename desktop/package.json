@@ -1,0 +1,13 @@
+{
+  "name": "photolib-desktop",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Native desktop shell for photolib",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

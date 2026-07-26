@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e0f11">
+  <title>photolib</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">photolib</span>
+        <span class="brand-tag">private by design</span>
+      </div>
+      <div class="topstats mono" id="topStats" aria-live="polite"></div>
+      <div class="status"><span id="statusDot" class="dot"></span><span id="appStatus">Starting…</span></div>
+    </div>
+    <div id="loadStrip" class="load-strip" role="progressbar" aria-hidden="true"><span></span></div>
+  </header>
+
+  <div class="shell">
+    <main>
+      <section id="setupHero" class="hero">
+        <p class="eyebrow mono">LOCAL · OFFLINE · YOURS</p>
+        <h1 id="welcomeTitle">Every photo, findable.<br>Nothing leaves this computer.</h1>
+        <p id="welcomeCopy">Point photolib at the folders where your photos live. It builds a private index on this machine — searchable in plain language, organised by the people in them.</p>
+      </section>
+
+      <section id="errorPanel" class="panel notice error hidden" role="alert">
+        <div><strong>Something needs attention</strong><p id="errorText"></p></div>
+        <button id="dismissError" class="btn ghost" type="button">Dismiss</button>
+      </section>
+
+      <section id="modelPanel" class="panel notice warn hidden">
+        <div><strong id="modelTitle">Model download required</strong><p id="modelCopy"></p></div>
+        <button id="modelButton" class="btn primary" type="button">Download model</button>
+      </section>
+
+      <section id="managePanel" class="panel">
+        <div class="panel-head">
+          <div><h2 id="manageTitle">Choose your photo folder</h2><p>Subfolders are included. You can add more folders later — they all join one library.</p></div>
+        </div>
+        <div class="folder-row">
+          <input id="folderPath" class="field" type="text" spellcheck="false" autocomplete="off" placeholder="C:\Users\you\Pictures" aria-label="Photo folder path">
+          <button id="browseButton" class="btn" type="button">Browse…</button>
+          <button id="indexButton" class="btn primary" type="button">Build my library</button>
+        </div>
+        <p class="privacy">Originals are read in place — never moved, modified, or uploaded. The index and thumbnails live in your Windows user data folder.</p>
+      </section>
+
+      <section id="jobPanel" class="panel hidden" aria-live="polite">
+        <div class="job-top">
+          <div><h3 id="jobTitle">Working</h3><span id="jobDetail" class="job-detail mono"></span></div>
+          <div class="mono"><strong id="jobPercent">0%</strong> · <span id="jobPhase" class="job-label">starting</span></div>
+        </div>
+        <div class="progress" aria-label="Job progress"><div id="progressBar"></div></div>
+        <button id="cancelJob" class="btn ghost danger" type="button" style="margin-top:12px">Cancel</button>
+      </section>
+
+      <section id="librarySection" class="library hidden">
+        <nav class="tabs" role="tablist" aria-label="Library views">
+          <button id="tabPhotos" class="tab active" type="button" role="tab" aria-selected="true">Photos</button>
+          <button id="tabPeople" class="tab" type="button" role="tab" aria-selected="false">People</button>
+          <button id="tabManage" class="tab" type="button" role="tab" aria-selected="false">Library</button>
+          <span id="resultCount" class="tabs-meta mono"></span>
+        </nav>
+
+        <div id="photosView">
+          <form id="searchForm" class="searchbar">
+            <div class="search-wrap">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="searchInput" class="field" type="search" placeholder="Describe a photo — or leave empty and browse with filters" aria-label="Search photos">
+            </div>
+            <button class="btn primary" type="submit">Search</button>
+          </form>
+
+          <div class="filterbar">
+            <div class="people-picker">
+              <button id="peopleButton" class="btn chip-btn" type="button" aria-haspopup="true" aria-expanded="false">People</button>
+              <div id="peoplePanel" class="picker-panel hidden">
+                <input id="peopleSearch" class="field slim" type="text" placeholder="Find a person…" aria-label="Find a person">
+                <div class="picker-mode mono" id="peopleModeRow">
+                  <label><input type="radio" name="peopleMode" value="all" checked> everyone selected</label>
+                  <label><input type="radio" name="peopleMode" value="any"> any of them</label>
+                </div>
+                <div id="peopleOptions" class="picker-list"></div>
+              </div>
+            </div>
+            <input id="dateFrom" class="field slim" type="date" aria-label="Taken after" title="Taken after">
+            <input id="dateTo" class="field slim" type="date" aria-label="Taken before" title="Taken before">
+            <select id="cameraFilter" class="select slim hidden" aria-label="Camera"><option value="">Any camera</option></select>
+            <label class="toggle mono" id="locationToggleWrap" title="Only photos with GPS data">
+              <input id="locationToggle" type="checkbox"> has location
+            </label>
+            <select id="sortSelect" class="select slim" aria-label="Sort photos">
+              <option value="relevance">Best match</option>
+              <option value="date_desc">Newest first</option>
+              <option value="date_asc">Oldest first</option>
+              <option value="added_desc">Recently added</option>
+              <option value="random">Shuffle</option>
+            </select>
+            <button id="clearFilters" class="btn ghost" type="button">Clear</button>
+          </div>
+
+          <div id="selectedPeople" class="chips hidden" aria-label="People in this search"></div>
+          <div id="recentSearches" class="chips hidden" aria-label="Recent searches"></div>
+
+          <div id="timeline" class="timeline hidden" aria-label="Photos per month"></div>
+
+          <div id="similarBanner" class="panel notice hidden">
+            <div><strong>Showing similar photos</strong><p id="similarText"></p></div>
+            <button id="similarClear" class="btn ghost" type="button">Back to library</button>
+          </div>
+
+          <div id="photoGrid" class="grid"></div>
+          <div id="pager" class="pager hidden">
+            <button id="prevPage" class="btn ghost" type="button">Previous</button>
+            <span id="pageLabel" class="mono">Page 1</span>
+            <button id="nextPage" class="btn ghost" type="button">Next</button>
+          </div>
+        </div>
+
+        <div id="peopleView" class="hidden">
+          <section id="mergeSuggestPanel" class="panel">
+            <div class="panel-head">
+              <div><h2>Merge review</h2><p>Likeliest pairs first, long shots included. Merging keeps every photo — and future scans recognise the merged person. Tip: click a person's name below to rename them right there.</p></div>
+            </div>
+            <div id="mergeSuggestList" class="merge-cards"></div>
+          </section>
+          <section id="untaggedPanel" class="panel hidden">
+            <div class="panel-head">
+              <div><h2>No one tagged yet</h2><p id="untaggedCopy">Photos where a face was spotted but nobody has been identified.</p></div>
+              <button id="untaggedReview" class="btn" type="button">Review in Photos</button>
+            </div>
+            <div id="untaggedRow" class="thumb-row"></div>
+          </section>
+          <div id="peopleGrid" class="people-grid"></div>
+        </div>
+
+        <div id="manageView" class="hidden">
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Library folders</h2><p>Every folder here feeds one shared library. Rescans are incremental — only new and changed files are processed.</p></div>
+              <div class="panel-actions">
+                <button id="addRootButton" class="btn" type="button">Add folder…</button>
+                <button id="rescanAllButton" class="btn primary" type="button">Rescan all</button>
+              </div>
+            </div>
+            <div id="rootsList" class="roots-list"></div>
+            <label class="check-row">
+              <input id="pruneMissing" type="checkbox">
+              During rescans, remove entries whose original files no longer exist
+            </label>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Duplicates</h2><p>Exact copies and near-identical shots, grouped so you can pick a keeper.</p></div>
+              <button id="findDupes" class="btn" type="button">Scan for duplicates</button>
+            </div>
+            <div id="dupeList" class="dupe-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Models</h2><p id="modelStatusCopy">Everything runs on this machine.</p></div>
+            </div>
+            <div id="modelStatusList" class="mono model-lines"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="photoModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Photo viewer">
+    <div class="modal-card">
+      <button id="modalClose" class="modal-close" type="button" aria-label="Close photo">×</button>
+      <button id="modalPrev" class="modal-nav prev hidden" type="button" aria-label="Previous photo">‹</button>
+      <button id="modalNext" class="modal-nav next hidden" type="button" aria-label="Next photo">›</button>
+      <img id="modalImage" alt="Full-size photo">
+      <div class="modal-info">
+        <div class="modal-text">
+          <strong id="modalName">Photo</strong>
+          <span id="modalMeta" class="mono"></span>
+        </div>
+        <div class="modal-buttons">
+          <button id="modalDetailsBtn" class="btn ghost" type="button">Details</button>
+          <button id="modalSimilar" class="btn ghost" type="button">More like this</button>
+        </div>
+      </div>
+      <div id="modalExif" class="exif hidden"></div>
+      <div id="modalFaces" class="modal-faces hidden">
+        <div id="modalFacesRow" class="faces-row"></div>
+        <div id="faceActions" class="face-actions hidden">
+          <span id="faceActionsLabel" class="mono"></span>
+          <button id="faceProfile" class="btn slim-btn" type="button">Open profile</button>
+          <button id="faceSearch" class="btn slim-btn" type="button">Their photos</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="personModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Person details">
+    <div class="modal-card person-card">
+      <button id="personClose" class="modal-close" type="button" aria-label="Close person">×</button>
+      <div class="person-body">
+        <div class="person-head">
+          <div id="personCover" class="person-cover" aria-hidden="true"></div>
+          <div class="person-head-main">
+            <div class="person-name-row">
+              <input id="personName" class="field" type="text" maxlength="200" placeholder="Add a name" aria-label="Person name">
+              <button id="personSave" class="btn primary" type="button">Save</button>
+            </div>
+            <p id="personMeta" class="person-meta mono"></p>
+            <div class="person-actions">
+              <button id="personPhotos" class="btn" type="button">Show photos</button>
+              <button id="personMergeBtn" class="btn" type="button">Merge into…</button>
+              <button id="personHide" class="btn ghost" type="button">Hide</button>
+              <button id="personForget" class="btn ghost danger" type="button">Forget person</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="mergePicker" class="merge-picker hidden">
+          <input id="mergeFilter" class="field slim" type="text" placeholder="Type to filter people…" aria-label="Filter people to merge into">
+          <div id="mergeList" class="merge-list"></div>
+        </div>
+
+        <div id="personSuggestSection" class="person-section hidden">
+          <div class="section-head">
+            <h4>Is this also them?</h4>
+            <span class="section-hint mono">✓ adds the face · ✗ hides it for good</span>
+          </div>
+          <div id="personSuggestions" class="faces-row"></div>
+        </div>
+
+        <div class="person-section">
+          <div class="section-head">
+            <h4 id="personFacesTitle">Faces</h4>
+            <button id="detachSelected" class="btn ghost danger" type="button" disabled>Not this person</button>
+          </div>
+          <div id="personFaces" class="faces-row"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

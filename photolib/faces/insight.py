@@ -48,12 +48,16 @@ class InsightFaceBackend(FaceBackend):
 
     def __init__(self, model_name: str = "buffalo_l", det_size: int = 640,
                  min_det_score: float = 0.5, min_face_size: int = 40,
-                 device: str = "auto"):
+                 device: str = "auto", model_root: str | None = None):
         self.model_name = model_name
         self.det_size = det_size
         self.min_det_score = min_det_score
         self.min_face_size = min_face_size
         self.device = device
+        # InsightFace resolves models under <root>/models/<name>. Keeping
+        # this inside the app's data directory rather than ~/.insightface
+        # makes a packaged install self-contained.
+        self.model_root = model_root
         self._app = None
         self._lock = threading.Lock()
 
@@ -67,6 +71,13 @@ class InsightFaceBackend(FaceBackend):
 
             logger.info("Loading InsightFace %s (det_size=%d)",
                         self.model_name, self.det_size)
+            kwargs = {}
+            if self.model_root:
+                from pathlib import Path
+
+                # FaceAnalysis resolves <root>/models/<name>, which is exactly
+                # where photolib.models downloads to.
+                kwargs["root"] = str(Path(self.model_root).expanduser())
             app = FaceAnalysis(
                 name=self.model_name,
                 # Detection + recognition only. The gender/age and 3D landmark

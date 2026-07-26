@@ -1,0 +1,7 @@
+# Reproducible runtime used by PyInstaller. Keep native packages pinned to
+# versions exercised by the frozen Windows binary.
+-r requirements-min.txt
+onnxruntime~=1.20.0
+tokenizers>=0.20,<0.23
+insightface==1.0.1
+pyinstaller~=6.21.0

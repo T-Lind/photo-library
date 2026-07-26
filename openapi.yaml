@@ -941,6 +941,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/models:
+    get:
+      tags:
+      - admin
+      summary: Models
+      description: 'Which model weights are present, and what still needs downloading.
+
+
+        The desktop app polls this on launch so a first run can show a download
+
+        step instead of appearing to hang the first time someone searches.'
+      operationId: models_api_v1_admin_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/models/fetch:
+    post:
+      tags:
+      - admin
+      summary: Fetch Models
+      description: Download missing model weights in the background.
+      operationId: fetch_models_api_v1_admin_models_fetch_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
   /api/v1/admin/duplicates:
     get:
       tags:
@@ -979,6 +1011,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api:
+    get:
+      summary: Api Root
+      operationId: api_root_api_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /:
     get:
       summary: Root

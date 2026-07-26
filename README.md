@@ -9,8 +9,6 @@ Built for real family libraries: 100k–200k photos and beyond.
 
 ![Photo Example](https://github.com/T-Lind/photo-library/blob/master/photos-example.png)
 
-The web UI lives in a companion repository:
-[T-Lind/photo-library-frontend](https://github.com/T-Lind/photo-library-frontend).
 
 ---
 
@@ -31,6 +29,16 @@ The web UI lives in a companion repository:
 - **Incremental indexing** — point it at a folder as often as you like; only
   new and changed files cost anything.
 
+## Installing it
+
+**Just want to use it?** Grab an installer from the
+[Releases page](https://github.com/T-Lind/photo-library/releases) — Windows,
+macOS, and Linux. Nothing else to install: no Python, no Node.js. It opens in
+its own window, you point it at a folder of photos, and it indexes them in the
+background. See [PACKAGING.md](PACKAGING.md) for how those are built.
+
+**Want to run it from source?** Read on.
+
 ## Quick start
 
 ```bash
@@ -49,13 +57,37 @@ Searching from the terminal works too:
 python -m photolib.cli search "birthday cake with candles"
 python -m photolib.cli stats
 python -m photolib.cli duplicates
+python -m photolib.cli models status     # what weights are installed
+python -m photolib.cli verify-model      # ONNX runtime still matches 🤗
 ```
+
+## Does it use the internet?
+
+At runtime, no. Search, indexing, face matching, and thumbnails all run
+against local files. Your photos never leave the machine.
+
+There is exactly one network request, and only when you trigger it: the face
+recognition weights (~290 MB) are downloaded once, on first use, from the
+InsightFace project's release page. `GET /api/v1/admin/models` shows the URL,
+size, and licence before anything is fetched, and `PHOTO_OFFLINE=1` refuses it
+entirely for an air-gapped install.
+
+From source, the first run also downloads the image/text model from Hugging
+Face. The packaged app bundles it instead, so it is offline from first launch.
+
+Beyond that: `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` are set so the ML
+libraries cannot contact a model hub behind the app's back, Next.js telemetry
+is disabled in every build script, and the UI uses a system font stack rather
+than a web font. The only outbound request the UI can make is opening
+OpenStreetMap in your browser if you click a photo's coordinates — no map
+tiles are loaded in-app.
 
 ## Models
 
 | Role | Default | Why |
 |---|---|---|
 | Image / text | `google/siglip2-base-patch16-224` | Better zero-shot retrieval than OpenAI CLIP at the same size, Apache-2.0, runs offline |
+| Image / text (packaged) | the same model, exported to ONNX | Drops PyTorch entirely: ~500 MB installer instead of ~3 GB |
 | Faces | InsightFace `buffalo_l` (RetinaFace + ArcFace `w600k_r50`) | Far more accurate than dlib on profiles, poor light, and children; batched ONNX inference with optional GPU |
 
 Both are swappable through configuration. Larger embedding models are a
@@ -82,7 +114,10 @@ Every setting is an environment variable (or a line in `.env`).
 | `PHOTO_DB_URI` | `data/library` | LanceDB location |
 | `PHOTO_THUMBNAIL_CACHE_DIR` | `data/thumbnails` | Thumbnail + face-crop cache |
 | `PHOTO_STATE_DIR` | `data/state` | Background job records |
-| `PHOTO_EMBED_BACKEND` | `siglip` | `siglip`, `clip`, `open_clip`, `stub` |
+| `PHOTO_EMBED_BACKEND` | `siglip` | `siglip`, `clip`, `open_clip`, `onnx`, `stub` |
+| `PHOTO_ONNX_MODEL_DIR` | `models/siglip2-base` | Exported model dir, for `onnx` |
+| `PHOTO_OFFLINE` | unset | Refuse every download, even model weights |
+| `PHOTO_WEB_DIR` | bundled | Built web UI to serve from the API process |
 | `PHOTO_EMBED_MODEL` | `google/siglip2-base-patch16-224` | Model id |
 | `PHOTO_FACE_BACKEND` | `insightface` | `insightface`, `dlib`, `none` |
 | `PHOTO_DEVICE` | `auto` | `auto`, `cuda`, `mps`, `cpu` |
@@ -132,7 +167,11 @@ Everything is under `/api/v1`. Full schema at `/docs`.
 - `POST /admin/index` — background indexing, returns a job id
 - `POST /admin/recluster`, `POST /admin/compact`
 - `GET  /admin/jobs`, `GET /admin/jobs/{id}`, `DELETE /admin/jobs/{id}`
+- `GET  /admin/models`, `POST /admin/models/fetch` — weight status and download
 - `GET  /admin/duplicates`, `GET /stats`, `GET /health`
+
+If a built UI is present (bundled, or `PHOTO_WEB_DIR`), the API also serves it
+at `/`. That is how the desktop app runs as a single process on one port.
 
 ## How it scales
 

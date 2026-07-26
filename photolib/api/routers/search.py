@@ -30,7 +30,11 @@ def _filters(req: SearchRequest) -> Filters:
         has_location=req.has_location,
         has_faces=req.has_faces,
         folder=req.folder,
+        camera=req.camera,
         untagged_only=req.untagged_only,
+        near_lat=req.near_lat,
+        near_lon=req.near_lon,
+        near_km=req.near_km,
     )
 
 
@@ -111,5 +115,14 @@ def timeline(service: PhotoService = Depends(get_service)):
 def folders(service: PhotoService = Depends(get_service)):
     try:
         return {"folders": service.folders()}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.get("/cameras")
+def cameras(service: PhotoService = Depends(get_service)):
+    """Distinct camera models with photo counts — the camera filter options."""
+    try:
+        return {"cameras": service.cameras()}
     except Exception as exc:
         raise translate_errors(exc)

@@ -40,14 +40,20 @@ class Filters:
     has_location: Optional[bool] = None
     has_faces: Optional[bool] = None
     folder: Optional[str] = None
+    camera: Optional[str] = None
     untagged_only: bool = False
+    # "Photos taken near here": centre + radius in km. All three or nothing.
+    near_lat: Optional[float] = None
+    near_lon: Optional[float] = None
+    near_km: float = 1.0
 
     @property
     def is_empty(self) -> bool:
         return (self.start_date is None and self.end_date is None
                 and not self.people_ids and self.has_location is None
                 and self.has_faces is None and not self.folder
-                and not self.untagged_only)
+                and not self.camera and not self.untagged_only
+                and self.near_lat is None)
 
 
 class LibraryIndex:
@@ -63,8 +69,10 @@ class LibraryIndex:
         self.taken_ts = np.zeros(0, dtype=np.float64)     # NaN = unknown date
         self.added_ts = np.zeros(0, dtype=np.float64)
         self.lat = np.zeros(0, dtype=np.float64)
+        self.lon = np.zeros(0, dtype=np.float64)
         self.face_count = np.zeros(0, dtype=np.int32)
         self.folders: List[str] = []
+        self.cameras: List[str] = []
         self._row_of_id: Dict[int, int] = {}
         self._rows_by_person: Dict[int, np.ndarray] = {}
         self._person_counts: Dict[int, int] = {}
@@ -89,7 +97,7 @@ class LibraryIndex:
     def _rebuild(self, version: Optional[int]) -> None:
         table = self._library.images.to_lance().to_table(
             columns=["image_id", "taken_at", "added_at", "lat", "lon",
-                     "face_count", "people_ids", "folder"])
+                     "face_count", "people_ids", "folder", "camera"])
         n = table.num_rows
         logger.debug("Rebuilding browse index over %d images", n)
 
@@ -98,9 +106,11 @@ class LibraryIndex:
         self.taken_ts = _timestamps(table["taken_at"])
         self.added_ts = _timestamps(table["added_at"])
         self.lat = _floats(table["lat"])
+        self.lon = _floats(table["lon"])
         self.face_count = np.nan_to_num(
             _floats(table["face_count"]), nan=0.0).astype(np.int32)
         self.folders = [f or "" for f in table["folder"].to_pylist()]
+        self.cameras = [c or "" for c in table["camera"].to_pylist()]
 
         self._row_of_id = {int(v): i for i, v in enumerate(self.image_ids)}
 
@@ -177,6 +187,17 @@ class LibraryIndex:
             located = ~np.isnan(self.lat)
             mask &= located if filters.has_location else ~located
 
+        if filters.near_lat is not None and filters.near_lon is not None:
+            # Equirectangular approximation — exact enough at photo-radius
+            # scales, and it vectorises to two multiplies per row.
+            km_per_deg = 111.32
+            dlat = (self.lat - filters.near_lat) * km_per_deg
+            dlon = ((self.lon - filters.near_lon) * km_per_deg
+                    * np.cos(np.radians(filters.near_lat)))
+            with np.errstate(invalid="ignore"):
+                within = (dlat * dlat + dlon * dlon) <= filters.near_km ** 2
+            mask &= np.nan_to_num(within, nan=False).astype(bool)
+
         if filters.has_faces is not None:
             has = self.face_count > 0
             mask &= has if filters.has_faces else ~has
@@ -188,10 +209,23 @@ class LibraryIndex:
             mask &= self.face_count > 0
             mask &= ~tagged
 
+        if filters.camera:
+            wanted = filters.camera.strip().lower()
+            camera_mask = np.fromiter(
+                (camera.strip().lower() == wanted for camera in self.cameras),
+                dtype=bool, count=n)
+            mask &= camera_mask
+
         if filters.folder:
-            prefix = filters.folder.rstrip("/")
+            # Store native absolute paths, but compare with a canonical slash
+            # so a Windows backslash does not turn subtree filtering into an
+            # exact-folder-only match.
+            prefix = filters.folder.replace("\\", "/").rstrip("/")
             folder_mask = np.fromiter(
-                (f == prefix or f.startswith(prefix + "/") for f in self.folders),
+                (normalised == prefix or normalised.startswith(prefix + "/")
+                 for normalised in
+                 (folder.replace("\\", "/").rstrip("/")
+                  for folder in self.folders)),
                 dtype=bool, count=n)
             mask &= folder_mask
 

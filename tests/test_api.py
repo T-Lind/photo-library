@@ -279,6 +279,23 @@ def test_indexing_a_missing_folder_is_a_400(client):
     assert response.status_code == 400
 
 
+
+
+def test_desktop_folder_picker_endpoint(client, tmp_path, monkeypatch):
+    from photolib.folder_picker import FolderChoice
+
+    monkeypatch.setattr(
+        "photolib.api.routers.admin.choose_photo_folder",
+        lambda: FolderChoice(path=str(tmp_path.resolve())),
+    )
+    response = client.post(f"{API}/admin/select-folder")
+    assert response.status_code == 200
+    assert response.json() == {
+        "path": str(tmp_path.resolve()),
+        "supported": True,
+        "cancelled": False,
+        "detail": "",
+    }
 def test_unknown_job_is_404(client):
     assert client.get(f"{API}/admin/jobs/deadbeef").status_code == 404
 
@@ -288,3 +305,167 @@ def test_gzip_is_applied_to_large_json(client):
                            headers={"Accept-Encoding": "gzip"})
     assert response.status_code == 200
     assert "X-Response-Time" in response.headers
+
+
+# ---------------------------------------------------------------------------
+# People management: face listings, merge suggestions, suggestion rejection
+# ---------------------------------------------------------------------------
+
+def _image_by_name(client, name):
+    results = client.post(f"{API}/search", json={"per_page": 100}).json()["results"]
+    return next(r for r in results if r["filename"] == name)
+
+
+def test_person_faces_lists_that_persons_faces_best_first(client):
+    person = client.get(f"{API}/people").json()[0]
+    faces = client.get(f"{API}/people/{person['person_id']}/faces").json()["faces"]
+
+    assert len(faces) == person["face_count"]
+    qualities = [f["quality"] for f in faces]
+    assert qualities == sorted(qualities, reverse=True)
+    assert all({"face_id", "image_id", "bbox", "confirmed"} <= set(f) for f in faces)
+
+
+def test_person_faces_unknown_person_is_404(client):
+    assert client.get(f"{API}/people/9999/faces").status_code == 404
+
+
+def test_merge_suggestions_finds_a_split_identity(client):
+    # Manufacture the classic clustering failure: one person split in two.
+    # Moving the face from a solo photo leaves the two identities with the
+    # same embedding and no shared photo, so the pair must be suggested.
+    image = _image_by_name(client, "beach-sunset-holiday-20180704.jpg")
+    face = client.get(f"{API}/images/{image['image_id']}/faces").json()["faces"][0]
+    original = face["person_id"]
+
+    split = client.post(f"{API}/faces/assign",
+                        json={"face_ids": [face["face_id"]]}).json()["person_id"]
+
+    suggestions = client.get(f"{API}/people/merge-suggestions").json()["suggestions"]
+    pairs = {(s["source"]["person_id"], s["target"]["person_id"]): s
+             for s in suggestions}
+
+    # The split-off person is the newcomer; the established one is kept.
+    assert (split, original) in pairs
+    assert pairs[(split, original)]["similarity"] > 0.9
+
+
+def test_merge_suggestions_vetoes_people_who_share_a_photo(client, indexed_service):
+    # Two faces in one photograph are almost never the same person, however
+    # similar their embeddings claim to be.
+    image = _image_by_name(client, "beach-sunset-holiday-20180705.jpg")
+    faces = client.get(f"{API}/images/{image['image_id']}/faces").json()["faces"]
+    a, b = faces[0]["person_id"], faces[1]["person_id"]
+
+    people = indexed_service.library.people.to_lance().to_table(
+        columns=["person_id", "centroid"]).to_pylist()
+    centroid = next(r["centroid"] for r in people if r["person_id"] == a)
+    indexed_service.library.people.update(where=f"person_id = {b}",
+                                          values={"centroid": centroid})
+
+    suggestions = client.get(f"{API}/people/merge-suggestions").json()["suggestions"]
+    pairs = {frozenset((s["source"]["person_id"], s["target"]["person_id"]))
+             for s in suggestions}
+    assert frozenset((a, b)) not in pairs
+
+
+def test_rejected_suggestion_is_not_suggested_again(client, indexed_service):
+    person = client.get(f"{API}/people").json()[0]
+    faces = client.get(f"{API}/people/{person['person_id']}/faces").json()["faces"]
+    face_id = faces[-1]["face_id"]
+
+    # Return one face to the pool as the auto-indexer would leave it:
+    # unassigned and unconfirmed. It should be suggested for its person.
+    indexed_service.library.faces.update(
+        where=f"face_id = {face_id}",
+        values={"person_id": -1, "confirmed": False})
+
+    suggested = client.get(
+        f"{API}/people/{person['person_id']}/suggestions").json()["suggestions"]
+    assert face_id in [s["face_id"] for s in suggested]
+
+    # "Not them" — after an explicit rejection it must stay gone.
+    client.post(f"{API}/faces/detach", json={"face_ids": [face_id]})
+    suggested = client.get(
+        f"{API}/people/{person['person_id']}/suggestions").json()["suggestions"]
+    assert face_id not in [s["face_id"] for s in suggested]
+
+
+# ---------------------------------------------------------------------------
+# Library roots and camera filtering
+# ---------------------------------------------------------------------------
+
+def test_roots_are_remembered_after_indexing(client, photo_dir):
+    """start_index_job records the folder, so the UI can offer 'rescan all'."""
+    roots = client.get(f"{API}/admin/roots").json()["roots"]
+    # The fixture indexes photo_dir through the Indexer directly, not the
+    # job API, so the list starts empty — add one explicitly.
+    body = client.post(f"{API}/admin/roots",
+                       json={"folder": str(photo_dir)}).json()
+    assert any(r["path"].lower() == str(photo_dir.resolve()).lower()
+               for r in body["roots"])
+    entry = next(r for r in body["roots"]
+                 if r["path"].lower() == str(photo_dir.resolve()).lower())
+    assert entry["exists"] is True
+    assert entry["photo_count"] == 8  # every fixture photo lives under it
+
+    # Adding the same folder twice must not duplicate it.
+    again = client.post(f"{API}/admin/roots",
+                        json={"folder": str(photo_dir)}).json()
+    assert len(again["roots"]) == len(body["roots"])
+
+    removed = client.delete(f"{API}/admin/roots",
+                            params={"path": str(photo_dir)}).json()
+    assert all(r["path"].lower() != str(photo_dir.resolve()).lower()
+               for r in removed["roots"])
+    assert roots == []  # sanity: fixture state really was empty at the start
+
+
+def test_adding_a_missing_folder_is_a_400(client):
+    response = client.post(f"{API}/admin/roots",
+                           json={"folder": "Z:/definitely/not/here"})
+    assert response.status_code == 400
+
+
+def test_camera_filter_and_listing(client, indexed_service):
+    # The synthetic fixture photos carry no EXIF camera; stamp one so the
+    # filter has something real to match.
+    image_id = client.post(f"{API}/search", json={"per_page": 1}).json()[
+        "results"][0]["image_id"]
+    indexed_service.library.images.update(
+        where=f"image_id = {image_id}", values={"camera": "TestCam X100"})
+    indexed_service.index.invalidate()
+
+    cameras = client.get(f"{API}/cameras").json()["cameras"]
+    assert {"camera": "TestCam X100", "count": 1} in cameras
+
+    hits = client.post(f"{API}/search",
+                       json={"camera": "TestCam X100"}).json()
+    assert hits["total"] == 1
+    assert hits["results"][0]["image_id"] == image_id
+
+    none = client.post(f"{API}/search", json={"camera": "NoSuchCam"}).json()
+    assert none["total"] == 0
+
+
+def test_near_location_filter(client, indexed_service):
+    """'Photos taken near here' returns only photos inside the radius."""
+    results = client.post(f"{API}/search", json={"per_page": 3}).json()["results"]
+    here, near, far = (r["image_id"] for r in results[:3])
+    lib = indexed_service.library
+    lib.images.update(where=f"image_id = {here}",
+                      values={"lat": 30.6280, "lon": -96.3344})
+    lib.images.update(where=f"image_id = {near}",
+                      values={"lat": 30.6300, "lon": -96.3360})  # ~300 m away
+    lib.images.update(where=f"image_id = {far}",
+                      values={"lat": 29.7604, "lon": -95.3698})  # ~150 km away
+    indexed_service.index.invalidate()
+
+    hits = client.post(f"{API}/search", json={
+        "near_lat": 30.6280, "near_lon": -96.3344, "near_km": 1.0}).json()
+    ids = {r["image_id"] for r in hits["results"]}
+    assert ids == {here, near}
+
+    wide = client.post(f"{API}/search", json={
+        "near_lat": 30.6280, "near_lon": -96.3344, "near_km": 500}).json()
+    assert {here, near, far} <= {r["image_id"] for r in wide["results"]}

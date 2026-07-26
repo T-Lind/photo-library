@@ -551,10 +551,12 @@ def suggest_for_person(library: Library, person_id: int, dim: int,
     if centroid.size != dim:
         return []
 
+    # `confirmed` unassigned faces are ones a human already rejected from a
+    # person ("not them"); re-suggesting those would undo the correction.
     rows = (
         library.faces.search(centroid.tolist())
         .metric("cosine")
-        .where(f"person_id = {UNASSIGNED}", prefilter=True)
+        .where(f"person_id = {UNASSIGNED} AND confirmed = false", prefilter=True)
         .select(["face_id", "image_id", "quality", "x", "y", "w", "h"])
         .limit(limit * 3)
         .to_arrow()
