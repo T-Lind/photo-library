@@ -866,6 +866,83 @@ class PhotoService:
         return sorted(({"folder": f, "count": c} for f, c in counts.items()),
                       key=lambda d: d["folder"])
 
+    def cameras(self) -> List[dict]:
+        """Distinct camera models with counts — drives the camera filter."""
+        self.require_ready()
+        self.index.ensure_fresh()
+        counts: Dict[str, int] = {}
+        for camera in self.index.cameras:
+            if camera:
+                counts[camera] = counts.get(camera, 0) + 1
+        return sorted(({"camera": c, "count": n} for c, n in counts.items()),
+                      key=lambda d: (-d["count"], d["camera"]))
+
+    # ------------------------------------------------------------------
+    # Source folders (library roots)
+    # ------------------------------------------------------------------
+    # The library itself only knows folders that contain photos. The roots
+    # file remembers what the *user* chose to index — a Pictures folder, an
+    # external drive, a scattered project directory — so the UI can offer
+    # "rescan everything" without asking them to retype paths.
+
+    def _roots_file(self) -> Path:
+        return Path(self.settings.state_dir) / "roots.json"
+
+    def _read_roots(self) -> List[str]:
+        import json
+
+        try:
+            data = json.loads(self._roots_file().read_text(encoding="utf-8"))
+            roots = data.get("roots", [])
+            return [str(r) for r in roots if isinstance(r, str)]
+        except (OSError, ValueError):
+            return []
+
+    def _write_roots(self, roots: List[str]) -> None:
+        import json
+
+        path = self._roots_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"roots": roots}, indent=2), encoding="utf-8")
+
+    def list_roots(self) -> List[dict]:
+        roots = self._read_roots()
+        counts: Dict[str, int] = {}
+        if self.ready:
+            self.index.ensure_fresh()
+            for root in roots:
+                prefix = root.replace("\\", "/").rstrip("/")
+                counts[root] = sum(
+                    1 for folder in self.index.folders
+                    if (n := folder.replace("\\", "/").rstrip("/")) == prefix
+                    or n.startswith(prefix + "/"))
+        return [{
+            "path": root,
+            "exists": Path(root).is_dir(),
+            "photo_count": counts.get(root, 0),
+        } for root in roots]
+
+    def add_root(self, folder: str) -> List[dict]:
+        root = Path(folder).expanduser()
+        if not root.is_dir():
+            raise ValueError(f"{folder} is not a directory")
+        resolved = str(root.resolve())
+        roots = self._read_roots()
+        # Windows paths are case-insensitive; don't list one drive twice.
+        if resolved.lower() not in [r.lower() for r in roots]:
+            roots.append(resolved)
+            self._write_roots(roots)
+        return self.list_roots()
+
+    def remove_root(self, folder: str) -> List[dict]:
+        """Forget a source folder. Its photos stay in the library."""
+        target = str(Path(folder).expanduser()).lower()
+        resolved = str(Path(folder).expanduser().resolve()).lower()
+        roots = [r for r in self._read_roots()
+                 if r.lower() not in (target, resolved)]
+        self._write_roots(roots)
+        return self.list_roots()
+
     # ------------------------------------------------------------------
     # Jobs
     # ------------------------------------------------------------------
@@ -876,6 +953,10 @@ class PhotoService:
         root = Path(folder).expanduser()
         if not root.is_dir():
             raise ValueError(f"{folder} is not a directory")
+        try:
+            self.add_root(str(root))
+        except Exception:  # remembering the root must never block indexing
+            logger.warning("Could not record %s as a library root", root)
 
         def run(progress) -> dict:
             indexer = Indexer(self.library, self.settings, self.embedder,

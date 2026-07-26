@@ -40,6 +40,7 @@ class Filters:
     has_location: Optional[bool] = None
     has_faces: Optional[bool] = None
     folder: Optional[str] = None
+    camera: Optional[str] = None
     untagged_only: bool = False
 
     @property
@@ -47,7 +48,7 @@ class Filters:
         return (self.start_date is None and self.end_date is None
                 and not self.people_ids and self.has_location is None
                 and self.has_faces is None and not self.folder
-                and not self.untagged_only)
+                and not self.camera and not self.untagged_only)
 
 
 class LibraryIndex:
@@ -65,6 +66,7 @@ class LibraryIndex:
         self.lat = np.zeros(0, dtype=np.float64)
         self.face_count = np.zeros(0, dtype=np.int32)
         self.folders: List[str] = []
+        self.cameras: List[str] = []
         self._row_of_id: Dict[int, int] = {}
         self._rows_by_person: Dict[int, np.ndarray] = {}
         self._person_counts: Dict[int, int] = {}
@@ -89,7 +91,7 @@ class LibraryIndex:
     def _rebuild(self, version: Optional[int]) -> None:
         table = self._library.images.to_lance().to_table(
             columns=["image_id", "taken_at", "added_at", "lat", "lon",
-                     "face_count", "people_ids", "folder"])
+                     "face_count", "people_ids", "folder", "camera"])
         n = table.num_rows
         logger.debug("Rebuilding browse index over %d images", n)
 
@@ -101,6 +103,7 @@ class LibraryIndex:
         self.face_count = np.nan_to_num(
             _floats(table["face_count"]), nan=0.0).astype(np.int32)
         self.folders = [f or "" for f in table["folder"].to_pylist()]
+        self.cameras = [c or "" for c in table["camera"].to_pylist()]
 
         self._row_of_id = {int(v): i for i, v in enumerate(self.image_ids)}
 
@@ -187,6 +190,13 @@ class LibraryIndex:
                 tagged[rows] = True
             mask &= self.face_count > 0
             mask &= ~tagged
+
+        if filters.camera:
+            wanted = filters.camera.strip().lower()
+            camera_mask = np.fromiter(
+                (camera.strip().lower() == wanted for camera in self.cameras),
+                dtype=bool, count=n)
+            mask &= camera_mask
 
         if filters.folder:
             # Store native absolute paths, but compare with a canonical slash

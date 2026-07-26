@@ -389,3 +389,60 @@ def test_rejected_suggestion_is_not_suggested_again(client, indexed_service):
     suggested = client.get(
         f"{API}/people/{person['person_id']}/suggestions").json()["suggestions"]
     assert face_id not in [s["face_id"] for s in suggested]
+
+
+# ---------------------------------------------------------------------------
+# Library roots and camera filtering
+# ---------------------------------------------------------------------------
+
+def test_roots_are_remembered_after_indexing(client, photo_dir):
+    """start_index_job records the folder, so the UI can offer 'rescan all'."""
+    roots = client.get(f"{API}/admin/roots").json()["roots"]
+    # The fixture indexes photo_dir through the Indexer directly, not the
+    # job API, so the list starts empty — add one explicitly.
+    body = client.post(f"{API}/admin/roots",
+                       json={"folder": str(photo_dir)}).json()
+    assert any(r["path"].lower() == str(photo_dir.resolve()).lower()
+               for r in body["roots"])
+    entry = next(r for r in body["roots"]
+                 if r["path"].lower() == str(photo_dir.resolve()).lower())
+    assert entry["exists"] is True
+    assert entry["photo_count"] == 8  # every fixture photo lives under it
+
+    # Adding the same folder twice must not duplicate it.
+    again = client.post(f"{API}/admin/roots",
+                        json={"folder": str(photo_dir)}).json()
+    assert len(again["roots"]) == len(body["roots"])
+
+    removed = client.delete(f"{API}/admin/roots",
+                            params={"path": str(photo_dir)}).json()
+    assert all(r["path"].lower() != str(photo_dir.resolve()).lower()
+               for r in removed["roots"])
+    assert roots == []  # sanity: fixture state really was empty at the start
+
+
+def test_adding_a_missing_folder_is_a_400(client):
+    response = client.post(f"{API}/admin/roots",
+                           json={"folder": "Z:/definitely/not/here"})
+    assert response.status_code == 400
+
+
+def test_camera_filter_and_listing(client, indexed_service):
+    # The synthetic fixture photos carry no EXIF camera; stamp one so the
+    # filter has something real to match.
+    image_id = client.post(f"{API}/search", json={"per_page": 1}).json()[
+        "results"][0]["image_id"]
+    indexed_service.library.images.update(
+        where=f"image_id = {image_id}", values={"camera": "TestCam X100"})
+    indexed_service.index.invalidate()
+
+    cameras = client.get(f"{API}/cameras").json()["cameras"]
+    assert {"camera": "TestCam X100", "count": 1} in cameras
+
+    hits = client.post(f"{API}/search",
+                       json={"camera": "TestCam X100"}).json()
+    assert hits["total"] == 1
+    assert hits["results"][0]["image_id"] == image_id
+
+    none = client.post(f"{API}/search", json={"camera": "NoSuchCam"}).json()
+    assert none["total"] == 0

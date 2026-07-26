@@ -20,6 +20,7 @@ class SearchRequest(BaseModel):
     has_location: Optional[bool] = None
     has_faces: Optional[bool] = None
     folder: Optional[str] = None
+    camera: Optional[str] = None
     untagged_only: bool = False
     sort: SortOption = "relevance"
     page: int = Field(1, ge=1)
@@ -115,6 +116,10 @@ class IndexRequest(BaseModel):
     rebuild: bool = Field(False, description="Drop the library and start over")
     prune_missing: bool = Field(
         False, description="Remove indexed photos whose files are gone")
+
+
+class RootRequest(BaseModel):
+    folder: str = Field(..., description="Absolute path to a photo folder")
 
 
 class ReclusterRequest(BaseModel):

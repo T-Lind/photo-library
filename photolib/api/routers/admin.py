@@ -11,7 +11,7 @@ from ...config import get_settings
 from ...folder_picker import choose_photo_folder
 from ...service import PhotoService
 from ..deps import get_service, translate_errors
-from ..schemas import IndexRequest, JobOut, ReclusterRequest
+from ..schemas import IndexRequest, JobOut, ReclusterRequest, RootRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
@@ -21,6 +21,34 @@ router = APIRouter(tags=["admin"])
 def select_folder():
     """Open the operating system's folder picker for the local desktop UI."""
     return choose_photo_folder().__dict__
+
+
+@router.get("/admin/roots")
+def list_roots(service: PhotoService = Depends(get_service)):
+    """Every folder the user has added to the library, with photo counts."""
+    try:
+        return {"roots": service.list_roots()}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/admin/roots")
+def add_root(req: RootRequest, service: PhotoService = Depends(get_service)):
+    """Remember a source folder (indexing it is a separate, explicit step)."""
+    try:
+        return {"roots": service.add_root(req.folder)}
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.delete("/admin/roots")
+def remove_root(path: str = Query(..., description="Folder to forget"),
+                service: PhotoService = Depends(get_service)):
+    """Forget a source folder. Photos already indexed from it stay."""
+    try:
+        return {"roots": service.remove_root(path)}
+    except Exception as exc:
+        raise translate_errors(exc)
 
 
 @router.get("/stats")
