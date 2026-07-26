@@ -198,13 +198,14 @@ class PhotoService:
                      if "_distance" in table.column_names
                      else [0.0] * table.num_rows)
 
+        row_map = self.index.row_map()
         rows: List[int] = []
         scores: List[float] = []
         for image_id, distance in zip(hits, distances):
             image_id = int(image_id)
             if exclude_image_id is not None and image_id == exclude_image_id:
                 continue
-            row = self.index.row_of(image_id)
+            row = row_map.get(image_id)
             if row is None or not allowed_set[row]:
                 continue
             similarity = 1.0 - float(distance)

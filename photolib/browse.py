@@ -63,6 +63,7 @@ class LibraryIndex:
         self._library = library
         self._lock = threading.RLock()
         self._version: Optional[int] = None
+        self._ocr_handle = None
         self._ocr_version: Optional[int] = None
         self._built = False
 
@@ -88,20 +89,24 @@ class LibraryIndex:
                 version = self._library.images.version
             except Exception:
                 version = None
-            ocr_version = self._ocr_table_version()
-            if (self._built and version == self._version
-                    and ocr_version == self._ocr_version):
+            if self._built and version == self._version and self._ocr_fresh():
                 return
             self._rebuild(version)
-            self._ocr_version = ocr_version
 
-    def _ocr_table_version(self) -> Optional[int]:
+    def _ocr_fresh(self) -> bool:
+        """Is the cached OCR text still current?
+
+        Uses the table handle captured at rebuild time — ensure_fresh runs on
+        every row lookup, so this must never touch the filesystem the way
+        ``table_names()``/``open_table()`` do. A brand-new OCR table is
+        picked up via ``invalidate()``, which every writer already calls.
+        """
+        if self._ocr_handle is None:
+            return True
         try:
-            if self._library.has_ocr():
-                return self._library.ocr.version
+            return self._ocr_handle.version == self._ocr_version
         except Exception:
-            pass
-        return None
+            return False
 
     def invalidate(self) -> None:
         with self._lock:
@@ -150,10 +155,14 @@ class LibraryIndex:
         """Attach extracted text to image rows. Absent table = no text."""
         self.ocr_text = [""] * n
         self.ocr_scanned = np.zeros(n, dtype=bool)
+        self._ocr_handle = None
+        self._ocr_version = None
         try:
             if not self._library.has_ocr():
                 return
-            table = self._library.ocr.to_lance().to_table(
+            self._ocr_handle = self._library.ocr
+            self._ocr_version = self._ocr_handle.version
+            table = self._ocr_handle.to_lance().to_table(
                 columns=["image_id", "text"])
         except Exception as exc:
             logger.debug("OCR text not loaded: %s", exc)
@@ -194,6 +203,15 @@ class LibraryIndex:
     def row_of(self, image_id: int) -> Optional[int]:
         self.ensure_fresh()
         return self._row_of_id.get(int(image_id))
+
+    def row_map(self) -> Dict[int, int]:
+        """image_id -> row, freshness checked once — for per-hit loops.
+
+        Calling ``row_of`` inside a 1000-hit loop pays the freshness check
+        1000 times; snapshotting the mapping pays it once.
+        """
+        self.ensure_fresh()
+        return self._row_of_id
 
     def ids_of(self, rows: np.ndarray) -> List[int]:
         return [int(v) for v in self.image_ids[rows]]
