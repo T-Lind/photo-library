@@ -30,3 +30,19 @@ def test_frozen_build_bundles_the_video_decoder():
     spec = (ROOT / "packaging" / "photolib.spec").read_text(encoding="utf-8")
     assert 'collect_data_files("imageio_ffmpeg")' in spec
     assert '"imageio_ffmpeg"' in spec  # hiddenimport
+
+
+def test_windows_sfx_installs_from_a_unique_temporary_directory():
+    comment = (
+        ROOT / "packaging" / "windows" / "sfx-comment.txt"
+    ).read_text(encoding="utf-8")
+    installer = (
+        ROOT / "packaging" / "windows" / "install-portable.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "TempMode=" in comment
+    assert "Setup=powershell.exe" in comment
+    assert 'Mutex]::new($false, "Local\\photolib-installer")' in installer
+    assert 'Get-Process -Name "photolib", "photolib-server"' in installer
+    assert 'Join-Path $env:LOCALAPPDATA "Programs"' in installer
+    assert "robocopy.exe" in installer

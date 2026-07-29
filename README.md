@@ -1,16 +1,16 @@
 # photolib
 
-A local, private photo library. Search your photos by describing them
-("kids on the beach at sunset"), search by face, and browse by date, person,
-or place — with everything running on your own machine. No API keys, no
-uploads, no network calls at any point after the models are downloaded once.
+**Your moments, easy to find — without sending them anywhere.**
 
-Built for real family libraries: 100k–200k photos and beyond.
+Photolib is a private, local photo library for Windows. Search in plain
+language ("kids at the beach at sunset"), browse by person, date, or place,
+and organize albums in a desktop app built for real family libraries of
+100,000–200,000 photos and beyond.
 
-![Photo Example](https://github.com/T-Lind/photo-library/blob/master/photos-example.png)
+![Photolib library view](docs/images/photolib-library.png)
 
-
----
+> The screenshots use a small, fictional AI-generated demo library. Your own
+> photos stay on your computer.
 
 ## What it does
 
@@ -29,13 +29,26 @@ Built for real family libraries: 100k–200k photos and beyond.
 - **Incremental indexing** — point it at a folder as often as you like; only
   new and changed files cost anything.
 
+![Photolib people view](docs/images/photolib-people.png)
+
 ## Installing it
 
-**Just want to use it?** Grab an installer from the
-[Releases page](https://github.com/T-Lind/photo-library/releases) — Windows,
-macOS, and Linux. Nothing else to install: no Python, no Node.js. It opens in
-its own window, you point it at a folder of photos, and it indexes them in the
-background. See [PACKAGING.md](PACKAGING.md) for how those are built.
+Download the current **Windows x64 setup** from the
+[Releases page](https://github.com/T-Lind/photo-library/releases/latest).
+Nothing else is required: no Python, Node.js, account, or API key.
+
+1. Close Photolib if an older copy is running.
+2. Run `photolib-2.0.0-windows-x64-setup.exe`.
+3. Open **photolib** from the Start menu and choose a photo folder.
+
+The app installs for the current Windows user and leaves your library data
+alone during upgrades. The setup is not code-signed yet, so Windows may show
+a Microsoft Defender SmartScreen prompt; choose **More info** and then
+**Run anyway** if you downloaded it from this repository. The download is
+large because it includes the offline image-search model.
+
+This release currently provides Windows x64. See [PACKAGING.md](PACKAGING.md)
+for the cross-platform build configuration and source packaging instructions.
 
 **Want to run it from source?** Read on.
 

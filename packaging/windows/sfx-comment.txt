@@ -1,0 +1,5 @@
+;The comment below contains SFX script commands
+Title=photolib 2.0.0 setup
+TempMode=@set:user, Install or update photolib 2.0.0?, photolib setup
+Silent=0
+Setup=powershell.exe -NoProfile -ExecutionPolicy Bypass -File install-portable.ps1
