@@ -73,7 +73,7 @@ so the unquantized Windows release uses MSI. Double-clicking the MSI performs
 the normal system install. For a quiet current-user install instead:
 
 ```powershell
-msiexec /i photolib_2.0.0_x64_en-US.msi /quiet /norestart `
+msiexec /i photolib_2.0.1_x64_en-US.msi /quiet /norestart `
   ALLUSERS=2 MSIINSTALLPERUSER=1 `
   INSTALLDIR="$env:LOCALAPPDATA\Programs\photolib"
 ```

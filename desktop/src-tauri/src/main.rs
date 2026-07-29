@@ -11,8 +11,10 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_shell::process::CommandEvent;
+use std::sync::Mutex;
+
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 /// Printed by the sidecar on stdout once it is accepting connections.
@@ -37,9 +39,9 @@ fn main() {
                 .spawn()
                 .expect("failed to start the photolib server");
 
-            // Keep the child handle alive for the lifetime of the app;
-            // dropping it would terminate the server.
-            app.manage(child);
+            // CommandChild::kill consumes the handle, so keep it in an
+            // Option that the exit callback can take exactly once.
+            app.manage(Mutex::new(Some(child)));
 
             tauri::async_runtime::spawn(async move {
                 let mut opened = false;
@@ -83,8 +85,26 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running photolib");
+        .build(tauri::generate_context!())
+        .expect("error while building photolib")
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => stop_server(app),
+            _ => {}
+        });
+}
+
+fn stop_server(app: &tauri::AppHandle) {
+    let server = app.state::<Mutex<Option<CommandChild>>>();
+    let child = match server.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+
+    if let Some(child) = child {
+        if let Err(err) = child.kill() {
+            eprintln!("photolib: could not stop the server: {err}");
+        }
+    }
 }
 
 fn open_window(app: &tauri::AppHandle, url: &str) {

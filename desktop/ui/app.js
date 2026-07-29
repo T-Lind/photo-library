@@ -915,6 +915,7 @@ function showModalMedia(imageId, isVideo) {
   $("modalCopyBtn").classList.toggle("hidden", Boolean(isVideo));
   if (isVideo) {
     if (img.getAttribute("src")) img.removeAttribute("src");
+    delete img.dataset.imageId;
     img.classList.add("hidden");
     resetZoom();
     if (video.dataset.imageId !== String(imageId)) {
@@ -927,7 +928,10 @@ function showModalMedia(imageId, isVideo) {
   } else {
     stopModalVideo();
     img.classList.remove("hidden");
-    if (!img.getAttribute("src")) img.src = `${API}/images/${imageId}`;
+    if (img.dataset.imageId !== String(imageId)) {
+      img.dataset.imageId = String(imageId);
+      img.src = `${API}/images/${imageId}`;
+    }
   }
 }
 
@@ -1248,6 +1252,7 @@ function initZoom() {
 function closePhoto() {
   $("photoModal").classList.add("hidden");
   $("modalImage").removeAttribute("src");
+  delete $("modalImage").dataset.imageId;
   stopModalVideo();
   disarmModalTrash();
   resetZoom();

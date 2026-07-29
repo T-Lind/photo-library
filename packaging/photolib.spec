@@ -21,11 +21,25 @@ WEB_DIR = Path(os.environ.get("PHOTOLIB_WEB_DIR", ROOT / "desktop" / "ui"))
 
 datas = []
 
-if MODEL_DIR.is_dir():
-    datas.append((str(MODEL_DIR), "models/siglip2-base"))
+MODEL_FILES = (
+    "text.onnx",
+    "vision.onnx",
+    "tokenizer.json",
+    "preprocess.json",
+    "golden.json",
+)
+missing_model_files = [name for name in MODEL_FILES if not (MODEL_DIR / name).is_file()]
+if missing_model_files:
+    print(f"WARNING: incomplete exported model at {MODEL_DIR}; missing "
+          f"{', '.join(missing_model_files)}", file=sys.stderr)
 else:
-    print(f"WARNING: no exported model at {MODEL_DIR}; "
-          "run tools/export_onnx.py first", file=sys.stderr)
+    # List the runtime assets explicitly. Copying the whole model directory can
+    # accidentally ship optional quantized/export scratch files and push the
+    # Windows release over GitHub's 2 GiB asset limit.
+    datas += [
+        (str(MODEL_DIR / name), "models/siglip2-base")
+        for name in MODEL_FILES
+    ]
 
 if WEB_DIR.is_dir():
     datas.append((str(WEB_DIR), "web"))
