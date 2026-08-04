@@ -144,6 +144,7 @@ def test_face_boxes_are_stored_in_original_image_coordinates(indexer, service,
     """Detection runs on a downscaled buffer; boxes must be scaled back.
 
     Otherwise a face crop taken from the full-resolution original lands on
+
     the wrong part of the photo, and the UI's overlay is offset too.
     """
     from photolib.faces.stub import MARKER_WIDTH
@@ -200,3 +201,28 @@ def test_merged_person_captures_future_photos(indexer, service, photo_dir):
     new_faces = service.faces_in_image(new["image_id"])
     assert new_faces
     assert all(f["person_id"] == original for f in new_faces)
+
+
+def test_indexing_reuses_the_working_decode_for_hash_and_thumbnails(
+        indexer, service, tmp_path, monkeypatch):
+    from photolib import imageio
+
+    root = tmp_path / "single-decode"
+    make_photo(root / "photo.jpg", ["alice"])
+
+    calls = 0
+    real_open = imageio.open_image
+
+    def counting_open(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(imageio, "open_image", counting_open)
+    indexer.index_directory(root)
+
+    assert calls == 1
+    image_id = int(service.library.images.to_lance().to_table(
+        columns=["image_id"])["image_id"][0].as_py())
+    assert service.thumbs.thumbnail_path(image_id, "small").exists()
+    assert service.thumbs.thumbnail_path(image_id, "grid").exists()

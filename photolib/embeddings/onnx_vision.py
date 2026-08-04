@@ -223,7 +223,7 @@ class OnnxVisionEmbedder(Embedder):
         return l2_normalize(self.text.run(None, {"input_ids": ids})[0])
 
     # -- verification ----------------------------------------------------
-    def self_check(self, tolerance: float = 1e-3) -> dict:
+    def self_check(self, tolerance: float | None = None) -> dict:
         """Compare against the golden vectors the exporter recorded.
 
         Preprocessing reimplemented in a second language is exactly the kind
@@ -231,6 +231,9 @@ class OnnxVisionEmbedder(Embedder):
         months later. This turns that into a hard, checkable failure.
         """
         golden_path = self.dir / "golden.json"
+        if tolerance is None:
+            tolerance = 2e-2 if self.prefer_int8 else 1e-3
+
         if not golden_path.exists():
             return {"checked": False,
                     "reason": "no golden.json in the model directory"}

@@ -38,11 +38,11 @@ Download the current **Windows x64 setup** from the
 Nothing else is required: no Python, Node.js, account, or API key.
 
 1. Close Photolib if an older copy is running.
-2. Run `photolib-2.0.1-windows-x64-setup.exe`.
+2. Run the downloaded `photolib_2.0.2_x64-setup.exe`.
 3. Open **photolib** from the Start menu and choose a photo folder.
 
-The app installs for the current Windows user and leaves your library data
-alone during upgrades. The setup is not code-signed yet, so Windows may show
+The app leaves your library data alone during upgrades. The installer is not
+code-signed yet, so Windows may show
 a Microsoft Defender SmartScreen prompt; choose **More info** and then
 **Run anyway** if you downloaded it from this repository. The download is
 large because it includes the offline image-search model.
@@ -100,7 +100,7 @@ tiles are loaded in-app.
 | Role | Default | Why |
 |---|---|---|
 | Image / text | `google/siglip2-base-patch16-224` | Better zero-shot retrieval than OpenAI CLIP at the same size, Apache-2.0, runs offline |
-| Image / text (packaged) | the same model, exported to ONNX | Drops PyTorch entirely: ~500 MB installer instead of ~3 GB |
+| Image / text (packaged) | the same model, exported to hybrid INT8 ONNX | Drops PyTorch and reduces the bundled model by about 45% while enforcing 0.98 cosine parity; an FP32 build remains available for comparisons |
 | Faces | InsightFace `buffalo_l` (RetinaFace + ArcFace `w600k_r50`) | Far more accurate than dlib on profiles, poor light, and children; batched ONNX inference with optional GPU |
 
 Both are swappable through configuration. Larger embedding models are a
@@ -206,10 +206,11 @@ quality score, so "every photo with this face" is one ANN query. Identity
 assignment is incremental and does bounded work per face — see
 [Face recognition](#face-recognition) below.
 
-**Indexing.** Each photo is decoded exactly once and the same buffer feeds
-the embedder, the face detector, the perceptual hash, and the thumbnail
-writer. Metadata and IO run on a thread pool while model batches run on the
-accelerator. Work is committed in batches, so an interrupted run resumes.
+**Indexing.** Each photo's working image is decoded once and the same buffer
+feeds the embedder, face detector, perceptual hash, OCR, and thumbnail writer.
+The original file is streamed separately for its exact duplicate hash.
+Metadata and IO run on a thread pool while model batches run on the accelerator.
+Work is committed in batches, so an interrupted run resumes.
 
 **Thumbnails.** WebP, generated on demand and cached in sharded directories
 (no single directory ever holds 200k files), served with strong ETags so a

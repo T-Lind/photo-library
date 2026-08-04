@@ -18,12 +18,22 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 ROOT = Path(SPECPATH).parent
 MODEL_DIR = Path(os.environ.get("PHOTOLIB_MODEL_DIR", ROOT / "models" / "siglip2-base"))
 WEB_DIR = Path(os.environ.get("PHOTOLIB_WEB_DIR", ROOT / "desktop" / "ui"))
+MODEL_VARIANT = os.environ.get("PHOTOLIB_MODEL_VARIANT", "int8").strip().lower()
+
+if MODEL_VARIANT not in {"int8", "fp32"}:
+    raise ValueError(
+        "PHOTOLIB_MODEL_VARIANT must be 'int8' or 'fp32', "
+        f"not {MODEL_VARIANT!r}"
+    )
 
 datas = []
 
+MODEL_GRAPHS = {
+    "int8": ("text.int8.onnx", "vision.int8.onnx"),
+    "fp32": ("text.onnx", "vision.onnx"),
+}
 MODEL_FILES = (
-    "text.onnx",
-    "vision.onnx",
+    *MODEL_GRAPHS[MODEL_VARIANT],
     "tokenizer.json",
     "preprocess.json",
     "golden.json",
@@ -40,6 +50,7 @@ else:
         (str(MODEL_DIR / name), "models/siglip2-base")
         for name in MODEL_FILES
     ]
+    print(f"Bundling {MODEL_VARIANT} image-search model from {MODEL_DIR}")
 
 if WEB_DIR.is_dir():
     datas.append((str(WEB_DIR), "web"))

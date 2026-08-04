@@ -2,8 +2,8 @@
 
 Run this once, on a machine that has PyTorch, to produce a self-contained
 model directory the packaged application can load with nothing but
-onnxruntime. That is the difference between a ~3 GB installer that fights
-PyInstaller and a ~500 MB one that doesn't.
+onnxruntime. That substantially reduces the installer and removes the whole
+PyTorch packaging problem.
 
     python tools/export_onnx.py --model google/siglip2-base-patch16-224 \
                                 --out models/siglip2-base
@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -130,8 +131,8 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="models/siglip2-base")
     parser.add_argument("--opset", type=int, default=OPSET)
     parser.add_argument("--quantize", action="store_true",
-                        help="Also emit int8-quantised graphs (about 4x smaller, "
-                             "slight quality loss — verify before shipping)")
+                        help="Also emit quality-gated hybrid INT8 graphs "
+                             "(smaller, with sensitive layers kept in FP32)")
     parser.add_argument("--tolerance", type=float, default=2e-2,
                         help="Max allowed cosine drift from the PyTorch model")
     args = parser.parse_args(argv)
@@ -227,7 +228,8 @@ def main(argv=None) -> int:
 
     ok = _verify(out, reference_image, reference_text, dummy_pixels.numpy(),
                  dummy_ids.numpy(), args.tolerance)
-    ok = _verify_runtime(out) and ok
+    ok = _verify_runtime(out, prefer_int8=args.quantize,
+                         tolerance=args.tolerance) and ok
 
     total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     logger.info("Wrote %s (%.0f MB, %d-dim)", out, total / 1e6, dim)
@@ -268,12 +270,14 @@ def _write_golden(out: Path, model, processor, text_cfg: dict,
     logger.info("Wrote golden.json (%d probe texts)", len(PROBE_TEXTS))
 
 
-def _verify_runtime(out: Path) -> bool:
-    """Load the export through the actual runtime class and self-check it."""
+def _verify_runtime(out: Path, *, prefer_int8: bool = False,
+                    tolerance: float = 1e-3) -> bool:
+    """Load the graphs that will ship through the real runtime and check them."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from photolib.embeddings.onnx_vision import OnnxVisionEmbedder
 
-    report = OnnxVisionEmbedder(out).self_check()
+    report = OnnxVisionEmbedder(out, prefer_int8=prefer_int8).self_check(
+        tolerance=tolerance)
     logger.info("Runtime self-check: %s", json.dumps(report, indent=2))
     if not report.get("checked"):
         return False
@@ -283,13 +287,43 @@ def _verify_runtime(out: Path) -> bool:
     return True
 
 
-def _quantize(out: Path) -> None:
-    from onnxruntime.quantization import QuantType, quantize_dynamic
+def _late_vision_nodes(source: Path) -> list[str]:
+    """Select the final third of ViT blocks for quality-preserving INT8."""
+    import onnx
+
+    model = onnx.load(str(source), load_external_data=False)
+    layers = []
+    for node in model.graph.node:
+        match = re.search(r"/vision_model/encoder/layers\.(\d+)/", node.name)
+        if match and node.op_type in {"MatMul", "Gemm"}:
+            layers.append((node, int(match.group(1))))
+
+    if not layers:
+        raise RuntimeError(
+            "Could not identify vision transformer layers for safe quantisation")
+
+    first = (max(layer for _, layer in layers) + 1) * 2 // 3
+    selected = [node.name for node, layer in layers if layer >= first]
+    logger.info("Quantising vision transformer layers %d and later", first)
+    return selected
+
+
+def _quantize(out: Path, *, quantizer=None, weight_type=None) -> None:
+    if quantizer is None:
+        from onnxruntime.quantization import QuantType, quantize_dynamic
+
+        quantizer = quantize_dynamic
+        weight_type = QuantType.QUInt8
 
     for name in ("vision", "text"):
         source = out / f"{name}.onnx"
         target = out / f"{name}.int8.onnx"
-        quantize_dynamic(str(source), str(target), weight_type=QuantType.QInt8)
+        kwargs = {"weight_type": weight_type, "per_channel": True}
+        if name == "vision":
+            kwargs["nodes_to_quantize"] = _late_vision_nodes(source)
+        else:
+            kwargs["op_types_to_quantize"] = ["Gather"]
+        quantizer(str(source), str(target), **kwargs)
         logger.info("Quantised %s: %.0f MB -> %.0f MB", name,
                     source.stat().st_size / 1e6, target.stat().st_size / 1e6)
 
