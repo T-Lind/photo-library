@@ -9,7 +9,7 @@ def test_desktop_verify_model_mode_exits_with_parity_status(tmp_path, monkeypatc
     from photolib.embeddings import onnx_vision
 
     class FakeEmbedder:
-        def __init__(self, model_dir):
+        def __init__(self, model_dir, **kwargs):
             self.model_dir = model_dir
 
         def self_check(self):

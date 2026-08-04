@@ -23,6 +23,7 @@ def clean_env(monkeypatch):
     for key in ("PHOTO_DB_URI", "PHOTO_THUMBNAIL_CACHE_DIR", "PHOTO_STATE_DIR",
                 "PHOTO_FACES_DIR", "PHOTO_FACE_MODEL_ROOT", "PHOTO_WEB_DIR",
                 "PHOTO_EMBED_BACKEND", "PHOTO_ONNX_MODEL_DIR",
+                "PHOTO_ONNX_INT8",
                 "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
         monkeypatch.delenv(key, raising=False)
     from photolib.config import reset_settings_cache
@@ -82,6 +83,23 @@ def test_a_bundled_model_selects_the_onnx_backend(tmp_path, clean_env, monkeypat
 
     assert os.environ["PHOTO_EMBED_BACKEND"] == "onnx"
     assert os.environ["PHOTO_ONNX_MODEL_DIR"] == str(model)
+def test_an_int8_only_bundle_selects_quantized_graphs(tmp_path, clean_env,
+                                                       monkeypatch):
+    import os
+
+    bundle = tmp_path / "bundle"
+    model = bundle / "models" / "siglip2-base"
+    model.mkdir(parents=True)
+    (model / "preprocess.json").write_text("{}")
+    (model / "text.int8.onnx").write_bytes(b"int8")
+    (model / "vision.int8.onnx").write_bytes(b"int8")
+    monkeypatch.setattr("photolib.desktop.bundle_dir", lambda: bundle)
+
+    configure_environment(tmp_path / "appdata")
+
+    assert os.environ["PHOTO_ONNX_INT8"] == "1"
+
+
 
 
 def test_no_bundled_model_leaves_the_backend_alone(tmp_path, clean_env, monkeypatch):
@@ -107,6 +125,22 @@ def test_user_data_dir_is_platform_appropriate():
     path = user_data_dir("photolib-test")
     assert path.name == "photolib-test"
     assert path.is_absolute()
+def test_shutdown_channel_requests_uvicorn_exit():
+    from io import StringIO
+
+    from photolib.desktop import watch_stdin_for_shutdown
+
+    class Server:
+        should_exit = False
+
+    server = Server()
+    thread = watch_stdin_for_shutdown(
+        server, StringIO("ignored\nPHOTOLIB_SHUTDOWN\n"))
+    thread.join(timeout=1)
+
+    assert server.should_exit is True
+
+
 
 
 def test_ready_callback_fires_once_on_startup(settings):

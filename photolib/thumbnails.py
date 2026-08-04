@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+import numpy as np
 from PIL import Image
 
 from .imageio import open_image
@@ -144,6 +145,30 @@ class ThumbnailCache:
                 self.get_thumbnail(image_id, source, size_name)
             except Exception as exc:
                 logger.debug("Thumbnail pregeneration failed for %s: %s", source, exc)
+
+    def pregenerate_from_array(self, image_id: int, source: os.PathLike | str,
+                               array: np.ndarray,
+                               sizes=("small", "grid")) -> None:
+        """Warm thumbnails from the indexer's already-decoded RGB buffer."""
+        image = Image.fromarray(array)
+        try:
+            for size_name in sizes:
+                try:
+                    target = self.thumbnail_path(image_id, size_name, self.fmt)
+                    if self._fresh(target, source):
+                        continue
+                    edge = SIZES[size_name]
+                    thumb = image.copy()
+                    try:
+                        thumb.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+                        self._save(thumb, target, self.fmt)
+                    finally:
+                        thumb.close()
+                except Exception as exc:
+                    logger.debug("Thumbnail pregeneration failed for %s: %s",
+                                 source, exc)
+        finally:
+            image.close()
 
     def purge_image(self, image_id: int) -> int:
         removed = 0

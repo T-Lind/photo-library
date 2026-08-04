@@ -155,6 +155,100 @@ paths:
           content:
             application/json:
               schema: {}
+  /api/v1/cameras:
+    get:
+      tags:
+      - search
+      summary: Cameras
+      description: "Distinct camera models with photo counts \u2014 the camera filter options."
+      operationId: cameras_api_v1_cameras_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/images/trash:
+    post:
+      tags:
+      - images
+      summary: Trash Images
+      description: "Move photos to the OS Recycle Bin and drop them from the library.\n\nNothing is permanently\
+        \ deleted \u2014 the files are recoverable from the\nRecycle Bin. Rows whose files are already\
+        \ missing are cleaned up too."
+      operationId: trash_images_api_v1_images_trash_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrashRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/export:
+    post:
+      tags:
+      - images
+      summary: Export Images
+      description: 'Copy originals into a folder of the user''s choosing.
+
+
+        Purely additive: sources are never moved, renamed, or overwritten.'
+      operationId: export_images_api_v1_images_export_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/reveal:
+    post:
+      tags:
+      - images
+      summary: Reveal Image
+      description: Open the OS file manager with this file selected. Local desktop only.
+      operationId: reveal_image_api_v1_images__image_id__reveal_post
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/images/{image_id}:
     get:
       tags:
@@ -244,6 +338,32 @@ paths:
       summary: Get Details
       description: Full metadata, the people in the photo, and every detected face box.
       operationId: get_details_api_v1_images__image_id__details_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/text:
+    get:
+      tags:
+      - images
+      summary: Get Text
+      description: The full text found inside the image (details carries an excerpt).
+      operationId: get_text_api_v1_images__image_id__text_get
       parameters:
       - name: image_id
         in: path
@@ -370,6 +490,50 @@ paths:
                 items:
                   $ref: '#/components/schemas/PersonOut'
                 title: Response List People Api V1 People Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/merge-suggestions:
+    get:
+      tags:
+      - people
+      summary: Merge Suggestions
+      description: 'Pairs of people who look like the same person split in two.
+
+
+        Auto-clustering deliberately errs toward splitting; this surfaces the
+
+        likely splits so fixing them is one click instead of a hunt.'
+      operationId: merge_suggestions_api_v1_people_merge_suggestions_get
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: min_similarity
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Min Similarity
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -539,6 +703,41 @@ paths:
           maximum: 300
           minimum: 1
           default: 60
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/{person_id}/faces:
+    get:
+      tags:
+      - people
+      summary: Person Faces
+      description: "This person's faces, best first \u2014 powers the review and merge views."
+      operationId: person_faces_api_v1_people__person_id__faces_get
+      parameters:
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
           title: Limit
       responses:
         '200':
@@ -772,6 +971,305 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/albums:
+    get:
+      tags:
+      - albums
+      summary: List Albums
+      operationId: list_albums_api_v1_albums_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - albums
+      summary: Create Album
+      operationId: create_album_api_v1_albums_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlbumCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/albums/{album_id}:
+    get:
+      tags:
+      - albums
+      summary: Album Detail
+      description: The album plus its photos, newest addition first.
+      operationId: album_detail_api_v1_albums__album_id__get
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 2000
+          minimum: 1
+          default: 500
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      tags:
+      - albums
+      summary: Rename Album
+      operationId: rename_album_api_v1_albums__album_id__patch
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlbumRenameRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - albums
+      summary: Delete Album
+      description: Delete the album. The photos in it are untouched.
+      operationId: delete_album_api_v1_albums__album_id__delete
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/albums/{album_id}/items:
+    post:
+      tags:
+      - albums
+      summary: Add Items
+      operationId: add_items_api_v1_albums__album_id__items_post
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlbumItemsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/albums/{album_id}/items/remove:
+    post:
+      tags:
+      - albums
+      summary: Remove Items
+      operationId: remove_items_api_v1_albums__album_id__items_remove_post
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlbumItemsRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/albums/{album_id}/suggestions:
+    get:
+      tags:
+      - albums
+      summary: Suggestions
+      description: Photos that look like this album, for one-click adding.
+      operationId: suggestions_api_v1_albums__album_id__suggestions_get
+      parameters:
+      - name: album_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Album Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 24
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/select-folder:
+    post:
+      tags:
+      - admin
+      summary: Select Folder
+      description: Open the operating system's folder picker for the local desktop UI.
+      operationId: select_folder_api_v1_admin_select_folder_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/roots:
+    get:
+      tags:
+      - admin
+      summary: List Roots
+      description: Every folder the user has added to the library, with photo counts.
+      operationId: list_roots_api_v1_admin_roots_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - admin
+      summary: Add Root
+      description: Remember a source folder (indexing it is a separate, explicit step).
+      operationId: add_root_api_v1_admin_roots_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RootRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - admin
+      summary: Remove Root
+      description: Forget a source folder. Photos already indexed from it stay.
+      operationId: remove_root_api_v1_admin_roots_delete
+      parameters:
+      - name: path
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Folder to forget
+          title: Path
+        description: Folder to forget
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/stats:
     get:
       tags:
@@ -973,6 +1471,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobOut'
+  /api/v1/admin/ocr:
+    get:
+      tags:
+      - admin
+      summary: Ocr Status
+      description: Text-recognition availability and coverage.
+      operationId: ocr_status_api_v1_admin_ocr_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - admin
+      summary: Start Ocr
+      description: 'Extract text from every not-yet-scanned photo, as a background job.
+
+
+        Incremental: photos already scanned are skipped, so cancelling and
+
+        re-running resumes where it stopped. Nothing is re-embedded.'
+      operationId: start_ocr_api_v1_admin_ocr_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobOut'
+  /api/v1/admin/curation:
+    get:
+      tags:
+      - admin
+      summary: Export Curation
+      description: "Back up the hand-made data: person names, hidden flags, albums.\n\nKeyed by content\
+        \ hash, so the backup survives file moves and a full\nre-index. Face-level assignments are not\
+        \ included \u2014 they cannot be\nreconstructed once face ids change."
+      operationId: export_curation_api_v1_admin_curation_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - admin
+      summary: Import Curation
+      description: 'Restore a curation backup: albums exactly, people by photo overlap.'
+      operationId: import_curation_api_v1_admin_curation_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Data
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/admin/duplicates:
     get:
       tags:
@@ -1033,6 +1603,38 @@ paths:
               schema: {}
 components:
   schemas:
+    AlbumCreateRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          title: Name
+      type: object
+      required:
+      - name
+      title: AlbumCreateRequest
+    AlbumItemsRequest:
+      properties:
+        image_ids:
+          items:
+            type: integer
+          type: array
+          minItems: 1
+          title: Image Ids
+      type: object
+      required:
+      - image_ids
+      title: AlbumItemsRequest
+    AlbumRenameRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          title: Name
+      type: object
+      required:
+      - name
+      title: AlbumRenameRequest
     AssignFacesRequest:
       properties:
         face_ids:
@@ -1098,6 +1700,24 @@ components:
       required:
       - face_ids
       title: DetachFacesRequest
+    ExportRequest:
+      properties:
+        image_ids:
+          items:
+            type: integer
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Image Ids
+        folder:
+          type: string
+          minLength: 1
+          title: Folder
+      type: object
+      required:
+      - image_ids
+      - folder
+      title: ExportRequest
     FaceSearchRequest:
       properties:
         face_id:
@@ -1186,11 +1806,24 @@ components:
           type: integer
           title: Height
           default: 0
+        media_type:
+          type: string
+          title: Media Type
+          default: image
+        duration_ms:
+          type: integer
+          title: Duration Ms
+          default: 0
         score:
           anyOf:
           - type: number
           - type: 'null'
           title: Score
+        text_match:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Text Match
       type: object
       required:
       - image_id
@@ -1337,6 +1970,16 @@ components:
       required:
       - name
       title: RenamePersonRequest
+    RootRequest:
+      properties:
+        folder:
+          type: string
+          title: Folder
+          description: Absolute path to a photo folder
+      type: object
+      required:
+      - folder
+      title: RootRequest
     SearchRequest:
       properties:
         query:
@@ -1384,10 +2027,43 @@ components:
           - type: string
           - type: 'null'
           title: Folder
+        camera:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Camera
         untagged_only:
           type: boolean
           title: Untagged Only
           default: false
+        near_lat:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            minimum: -90.0
+          - type: 'null'
+          title: Near Lat
+        near_lon:
+          anyOf:
+          - type: number
+            maximum: 180.0
+            minimum: -180.0
+          - type: 'null'
+          title: Near Lon
+        near_km:
+          type: number
+          maximum: 20000.0
+          exclusiveMinimum: 0.0
+          title: Near Km
+          default: 1.0
+        media:
+          anyOf:
+          - type: string
+            enum:
+            - image
+            - video
+          - type: 'null'
+          title: Media
         sort:
           type: string
           enum:
@@ -1451,6 +2127,19 @@ components:
       - per_page
       - results
       title: SearchResponse
+    TrashRequest:
+      properties:
+        image_ids:
+          items:
+            type: integer
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Image Ids
+      type: object
+      required:
+      - image_ids
+      title: TrashRequest
     ValidationError:
       properties:
         loc:

@@ -22,6 +22,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -90,6 +91,11 @@ def configure_environment(data_dir: Optional[Path] = None) -> Path:
     if (bundled_model / "preprocess.json").exists():
         os.environ.setdefault("PHOTO_EMBED_BACKEND", "onnx")
         os.environ.setdefault("PHOTO_ONNX_MODEL_DIR", str(bundled_model))
+        # Standard installers contain only the smaller INT8 graphs. Source
+        # checkouts and maximum-quality builds may contain FP32 instead.
+        if (bundled_model / "text.int8.onnx").exists() and not (
+                bundled_model / "text.onnx").exists():
+            os.environ.setdefault("PHOTO_ONNX_INT8", "1")
 
     web = bundle / "web"
     if (web / "index.html").exists():
@@ -120,6 +126,27 @@ def setup_logging(data_dir: Path) -> None:
     )
 
 
+def watch_stdin_for_shutdown(server, stream=None) -> threading.Thread:
+    """Ask uvicorn to drain active requests when the shell closes."""
+    stream = stream or sys.stdin
+
+    def watch() -> None:
+        try:
+            for line in stream:
+                if line.strip() == "PHOTOLIB_SHUTDOWN":
+                    logger.info("Desktop shell requested a graceful shutdown")
+                    server.should_exit = True
+                    return
+        except (OSError, ValueError):
+            # stdin can disappear abruptly during OS shutdown. The desktop
+            # shell retains a timed hard-kill fallback for that case.
+            logger.debug("Desktop shutdown channel closed", exc_info=True)
+
+    thread = threading.Thread(
+        target=watch, name="photolib-shutdown", daemon=True)
+    thread.start()
+    return thread
+
 def main(argv=None) -> int:
     import argparse
 
@@ -147,7 +174,10 @@ def main(argv=None) -> int:
     if args.verify_model:
         from photolib.embeddings.onnx_vision import OnnxVisionEmbedder
 
-        report = OnnxVisionEmbedder(settings.onnx_model_dir).self_check()
+        report = OnnxVisionEmbedder(
+            settings.onnx_model_dir,
+            prefer_int8=settings.onnx_int8,
+        ).self_check()
         try:
             from insightface.app import FaceAnalysis  # noqa: F401
             report["face_runtime"] = True
@@ -177,8 +207,13 @@ def main(argv=None) -> int:
             webbrowser.open(url)
 
     run_when_ready(url, announce)
-    uvicorn.run(create_app(settings), host=args.host,
-                port=port, log_level="warning", access_log=False)
+    config = uvicorn.Config(
+        create_app(settings), host=args.host, port=port,
+        log_level="warning", access_log=False,
+    )
+    server = uvicorn.Server(config)
+    watch_stdin_for_shutdown(server)
+    server.run()
     return 0
 
 

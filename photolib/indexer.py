@@ -26,6 +26,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pyarrow as pa
+from PIL import Image
 
 from .config import Settings, get_settings
 from .db import (FACES, IMAGES, Library, LibraryMeta, SCHEMA_VERSION,
@@ -35,7 +36,7 @@ from .exif import read_metadata
 from .faces import FaceBackend, build_face_backend
 from .faces.cluster import FaceAssigner, FaceObservation
 from .hashing import content_hash, phash
-from .imageio import iter_image_files, load_rgb_array, open_image
+from .imageio import iter_image_files, load_rgb_array
 from .ocr import build_ocr
 from .thumbnails import ThumbnailCache
 
@@ -260,6 +261,7 @@ class Indexer:
             for start in range(0, len(files), chunk_size):
                 chunk = files[start:start + chunk_size]
                 prepared = list(pool.map(self._prepare, chunk))
+                thumbnail_inputs: List[Tuple[int, str, np.ndarray]] = []
 
                 good = [p for p in prepared if p.error is None]
                 for bad in (p for p in prepared if p.error is not None):
@@ -301,6 +303,8 @@ class Indexer:
                         image_rows.append(self._image_row(
                             image_id, prep, vector, people_ids, len(observations)))
                         face_rows.extend(self._face_row(o) for o in observations)
+                        if prep.array is not None:
+                            thumbnail_inputs.append((image_id, prep.path, prep.array))
 
                         if self.ocr is not None:
                             # Reuse the already-decoded buffer: OCR is one
@@ -315,9 +319,8 @@ class Indexer:
                                 "engine": self.ocr.name, "updated_at": now_ms(),
                             })
 
-                    if self.settings.pregenerate_thumbnails:
-                        pool.map(self._pregenerate,
-                                 [(r["image_id"], r["path"]) for r in image_rows[-len(good):]])
+                    if self.settings.pregenerate_thumbnails and thumbnail_inputs:
+                        list(pool.map(self._pregenerate, thumbnail_inputs))
 
                 # Release the decoded buffers before the next chunk is read.
                 for prep in prepared:
@@ -348,8 +351,7 @@ class Indexer:
             st = path.stat()
             meta = read_metadata(path)
             array = load_rgb_array(path, max_side=WORK_MAX_SIDE)
-            with open_image(path, target=(64, 64)) as small:
-                perceptual = phash(small)
+            perceptual = phash(Image.fromarray(array))
             width, height = self._true_size(path, array)
             video = is_video(path)
             # Probe results are cached, so this re-read costs nothing.
@@ -475,9 +477,9 @@ class Indexer:
             "crop_path": "",
         }
 
-    def _pregenerate(self, args: Tuple[int, str]) -> None:
-        image_id, path = args
-        self.thumbs.pregenerate(image_id, path)
+    def _pregenerate(self, args: Tuple[int, str, np.ndarray]) -> None:
+        image_id, path, array = args
+        self.thumbs.pregenerate_from_array(image_id, path, array)
 
     def _write(self, image_rows: List[dict], face_rows: List[dict],
                img_schema: pa.Schema, face_schema: pa.Schema,

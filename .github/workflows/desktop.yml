@@ -14,15 +14,19 @@ on:
       model:
         description: Embedding model to export
         default: google/siglip2-base-patch16-224
-      quantize:
-        description: Also emit int8 graphs (smaller, slightly lower quality)
-        type: boolean
-        default: false
+      model_variant:
+        description: Packaged model quality/size profile
+        type: choice
+        options:
+          - int8
+          - fp32
+        default: int8
   push:
     tags: ["v*"]
 
 env:
   MODEL: ${{ github.event.inputs.model || 'google/siglip2-base-patch16-224' }}
+  MODEL_VARIANT: ${{ github.event.inputs.model_variant || 'int8' }}
 
 jobs:
   # ---------------------------------------------------------------------
@@ -48,7 +52,7 @@ jobs:
       - name: Export to ONNX
         run: |
           python tools/export_onnx.py --model "$MODEL" --out models/siglip2-base \
-            ${{ github.event.inputs.quantize == 'true' && '--quantize' || '' }}
+            ${{ (github.event.inputs.model_variant || 'int8') == 'int8' && '--quantize' || '' }}
 
       # export_onnx.py fails the build if the exported graph drifts from
       # PyTorch, or if the NumPy runtime stops reproducing the 🤗 pipeline.
@@ -71,7 +75,7 @@ jobs:
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
             exe: .exe
-            bundles: msi
+            bundles: nsis
           - os: macos-latest
             triple: aarch64-apple-darwin
             exe: ""
@@ -105,7 +109,7 @@ jobs:
 
       - name: Build the sidecar
         shell: bash
-        run: pyinstaller packaging/photolib.spec --noconfirm --clean
+        run: PHOTOLIB_MODEL_VARIANT="$MODEL_VARIANT" pyinstaller packaging/photolib.spec --noconfirm --clean
 
       - name: Smoke-test the sidecar
         shell: bash
@@ -136,6 +140,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/src-tauri/binaries
+          rm -rf desktop/src-tauri/binaries/_internal
+          rm -f desktop/src-tauri/binaries/photolib-server-*
           # Tauri resolves sidecars by target-triple suffix.
           cp -r dist/photolib-server/* desktop/src-tauri/binaries/
           mv "desktop/src-tauri/binaries/photolib-server${{ matrix.exe }}" \
@@ -157,15 +163,27 @@ jobs:
       - name: Build the installer
         working-directory: desktop
         run: |
-          npm install
+          npm ci
           npx tauri build --bundles "${{ matrix.bundles }}"
+
+      - name: Guard the standard Windows installer size
+        if: matrix.os == 'windows-latest' && env.MODEL_VARIANT == 'int8'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*-setup.exe |
+            Select-Object -First 1
+          if (-not $installer) { throw "No NSIS setup executable was produced" }
+          $limit = 900MB
+          if ($installer.Length -gt $limit) {
+            throw "Hybrid INT8 setup is $([math]::Round($installer.Length / 1MB)) MB; limit is 900 MB"
+          }
+          Write-Host "Hybrid INT8 setup: $([math]::Round($installer.Length / 1MB)) MB"
 
       - uses: actions/upload-artifact@v4
         with:
           name: photolib-${{ matrix.os }}
           path: |
-            desktop/src-tauri/target/release/bundle/**/*.exe
-            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
             desktop/src-tauri/target/release/bundle/**/*.dmg
             desktop/src-tauri/target/release/bundle/**/*.AppImage
             desktop/src-tauri/target/release/bundle/**/*.deb
