@@ -32,6 +32,8 @@ def test_tracked_desktop_ui_is_the_real_app_not_a_placeholder():
     html = (ROOT / "desktop" / "ui" / "index.html").read_text(encoding="utf-8")
     assert 'id="folderPath"' in html
     assert 'src="/app.js"' in html
+    assert 'src="/curation.js"' in html
+    assert (ROOT / "desktop" / "ui" / "curation.js").is_file()
 
 
 def test_frozen_build_bundles_only_the_selected_model_and_video_decoder():

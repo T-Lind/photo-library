@@ -390,3 +390,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .person-name-row { flex-direction: column; }
   .picker-panel { width: min(320px, calc(100vw - 40px)); }
 }
+:root { --curation-gold: #efd17e; }
+.curation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; }
+.quality-explanation { font-size: 12px; line-height: 1.6; opacity: .8; flex: 1 1 280px; }
+.curation-badge { position: absolute; top: 12px; right: 12px; padding: 4px 8px; border-radius: 5px; color: var(--curation-gold); background: #151515dd; }
+.failure-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; overflow-wrap: anywhere; border-bottom: 1px solid #ffffff18; }
+.burst-dialog { width: min(1200px, 94vw); max-height: 90vh; overflow: auto; background: #17191d; color: #eee; border: 1px solid #555; border-radius: 12px; padding: 24px; }
+.burst-dialog::backdrop { background: #000b; }
+.burst-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 20px; }
+.burst-candidate { min-width: 0; }
+.burst-candidate img { width: 100%; height: 320px; object-fit: contain; background: #0b0c0e; }
+.burst-candidate p { font-size: 12px; line-height: 1.7; }
+.burst-candidate strong { display: block; overflow-wrap: anywhere; margin-top: 12px; }

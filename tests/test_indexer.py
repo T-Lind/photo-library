@@ -76,6 +76,53 @@ def test_prune_removes_deleted_files(indexer, service, photo_dir):
     assert service.library.images.count_rows(None) == 7
 
 
+def test_partial_scan_cannot_prune(indexed_service, indexer, photo_dir):
+    with pytest.raises(ValueError, match="complete scan"):
+        indexer.index_directory(photo_dir, prune_missing=True, limit=1)
+    assert indexed_service.library.images.count_rows(None) == 8
+
+
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_walk_error_preserves_catalog(indexed_service, indexer, photo_dir,
+                                     monkeypatch, rebuild):
+    from photolib import imageio
+
+    def partial_walk(root, *, followlinks, onerror):
+        yield str(root), [], ["city-street-night-lights.jpg"]
+        onerror(PermissionError("Drive subtree is inaccessible"))
+
+    monkeypatch.setattr(imageio.os, "walk", partial_walk)
+    with pytest.raises(PermissionError, match="inaccessible"):
+        indexer.index_directory(photo_dir, prune_missing=True, rebuild=rebuild)
+    assert indexed_service.library.images.count_rows(None) == 8
+    assert indexed_service.library.faces.count_rows(None) == 10
+
+
+def test_prune_preserves_existing_files_excluded_from_scan(
+        indexed_service, indexer, photo_dir, monkeypatch):
+    from photolib import imageio
+
+    supported = imageio.is_supported
+    monkeypatch.setattr(imageio, "is_supported", lambda p:
+                        p.name != "city-street-night-lights.jpg" and supported(p))
+    stats = indexer.index_directory(photo_dir, prune_missing=True)
+    assert stats.removed == 0
+    assert indexed_service.library.images.count_rows(None) == 8
+
+
+def test_prune_is_scoped_to_one_source(indexed_service, indexer, photo_dir,
+                                      tmp_path):
+    second = tmp_path / "second-drive"
+    make_photo(second / "other-photo.jpg")
+    indexer.index_directory(second)
+    (second / "other-photo.jpg").unlink()
+    second.rmdir()  # simulate a disconnected second source
+    (photo_dir / "city-street-night-lights.jpg").unlink()
+    stats = indexer.index_directory(photo_dir, prune_missing=True)
+    assert stats.removed == 1
+    assert indexed_service.library.images.count_rows(None) == 8
+
+
 def test_dates_are_extracted_and_missing_dates_stay_null(indexer, service, photo_dir):
     indexer.index_directory(photo_dir)
     table = service.library.images.to_lance().to_table(columns=["filename", "taken_at"])

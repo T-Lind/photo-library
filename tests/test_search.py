@@ -107,6 +107,50 @@ def test_semantic_search_respects_filters(indexed_service):
     assert all(person["person_id"] in r["people_ids"] for r in page.results)
 
 
+def test_empty_filter_does_not_load_model(indexed_service, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Empty filter must not embed or search vectors")
+
+    monkeypatch.setattr(indexed_service.embedder, "embed_texts", unexpected)
+    page = indexed_service.search("sunset", Filters(people_ids=[999999]),
+                                  sort="relevance")
+    assert page.total == 0
+
+
+def test_person_pair_and_text_rank_within_the_subset(indexed_service):
+    service = indexed_service
+    photos = service.search(None, Filters()).results
+    pair = next(p["people_ids"] for p in photos
+                if p["filename"] == "beach-sunset-holiday-20180705.jpg")
+    page = service.search("sunset portrait", Filters(people_ids=pair,
+                          people_mode="all"), sort="relevance")
+    assert page.total == 1
+    assert page.results[0]["filename"] == "beach-sunset-holiday-20180705.jpg"
+
+
+def test_subset_ranking_matches_exact_cosine(indexed_service):
+    service = indexed_service
+    allowed = service.index.select(Filters(has_faces=True))
+    vector = service.embedder.embed_texts(["beach sunset"])[0]
+    rows, scores = service._vector_rows(vector, allowed, limit=3)
+    stored = service.library.images.to_lance().to_table(
+        columns=["image_id", "vector"]).to_pylist()
+    allowed_ids = set(service.index.ids_of(allowed))
+    expected = sorted([
+        (r["image_id"], float(np.dot(r["vector"], vector) /
+                              (np.linalg.norm(r["vector"]) * np.linalg.norm(vector))))
+        for r in stored if r["image_id"] in allowed_ids
+    ], key=lambda item: (-item[1], item[0]))[:3]
+    assert service.index.ids_of(rows) == [i for i, _ in expected]
+    assert np.allclose(scores, [s for _, s in expected], atol=1e-6)
+
+    filtered, filtered_scores = service._vector_rows(
+        vector, allowed, min_score=float(scores[-1]) - 1e-5,
+        exclude_image_id=expected[0][0], limit=2)
+    assert service.index.ids_of(filtered) == [i for i, _ in expected[1:]]
+    assert len(filtered_scores) == 2
+
+
 def test_pagination_is_stable_and_non_overlapping(indexed_service):
     first = indexed_service.search(None, Filters(), sort="date_desc",
                                    page=1, per_page=3)

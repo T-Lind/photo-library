@@ -1,3 +1,3 @@
-from . import admin, faces, images, people, search
+from . import admin, curation, faces, images, people, search
 
-__all__ = ["admin", "faces", "images", "people", "search"]
+__all__ = ["admin", "curation", "faces", "images", "people", "search"]

@@ -10,6 +10,28 @@ import pytest
 API = "/api/v1"
 
 
+def test_cached_thumbnail_available_when_drive_is_offline(client, indexed_service):
+    from pathlib import Path
+
+    photo = client.post(f"{API}/search", json={}).json()["results"][0]
+    image_id = photo["image_id"]
+    url = f"{API}/images/{image_id}/thumbnail"
+    cached = client.get(url)
+    assert cached.status_code == 200
+    face = client.get(f"{API}/images/{image_id}/faces").json()["faces"][0]
+    crop_url = f"{API}/faces/{face['face_id']}/crop"
+    crop = client.get(crop_url)
+    assert crop.status_code == 200
+    Path(indexed_service.image_path(image_id)).unlink()
+    offline = client.get(url)
+    assert offline.status_code == 200
+    assert offline.content == cached.content
+    assert client.get(crop_url).content == crop.content
+    assert client.get(url, headers={"If-None-Match": cached.headers["etag"]}).status_code == 304
+    assert client.get(url, params={"size": "preview"}).status_code == 410
+    assert client.get(f"{API}/images/{image_id}").status_code == 410
+
+
 def test_health_reports_readiness_without_loading_models(client):
     body = client.get(f"{API}/health").json()
     assert body["status"] == "ok"

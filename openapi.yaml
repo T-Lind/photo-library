@@ -1,4 +1,4 @@
-# Generated from the FastAPI application — do not edit by hand.
+# Generated from the FastAPI application � do not edit by hand.
 # Regenerate with:  python -m photolib.cli openapi > openapi.yaml
 openapi: 3.1.0
 info:
@@ -1507,9 +1507,14 @@ paths:
       tags:
       - admin
       summary: Export Curation
-      description: "Back up the hand-made data: person names, hidden flags, albums.\n\nKeyed by content\
-        \ hash, so the backup survives file moves and a full\nre-index. Face-level assignments are not\
-        \ included \u2014 they cannot be\nreconstructed once face ids change."
+      description: 'Create a checksummed backup of all hand-made curation.
+
+
+        Photos are matched by content hash and path. Confirmed face assignments
+
+        also carry their exact bounding boxes, preserving identity splits and
+
+        confirmed unassigned faces across a rebuild when those faces still match.'
       operationId: export_curation_api_v1_admin_curation_get
       responses:
         '200':
@@ -1521,7 +1526,7 @@ paths:
       tags:
       - admin
       summary: Import Curation
-      description: 'Restore a curation backup: albums exactly, people by photo overlap.'
+      description: Verify and restore matched curation without guessing conflicts.
       operationId: import_curation_api_v1_admin_curation_post
       requestBody:
         content:
@@ -1569,6 +1574,208 @@ paths:
           minimum: 1
           default: 200
           title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/annotation:
+    patch:
+      tags:
+      - curation
+      summary: Annotate
+      operationId: annotate_api_v1_images__image_id__annotation_patch
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Annotation'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/images/{image_id}/burst:
+    get:
+      tags:
+      - curation
+      summary: Burst
+      operationId: burst_api_v1_images__image_id__burst_get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/saved-searches:
+    get:
+      tags:
+      - curation
+      summary: Searches
+      operationId: searches_api_v1_saved_searches_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+    post:
+      tags:
+      - curation
+      summary: Save Search
+      operationId: save_search_api_v1_saved_searches_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedSearch'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/saved-searches/{search_id}:
+    delete:
+      tags:
+      - curation
+      summary: Delete Search
+      operationId: delete_search_api_v1_saved_searches__search_id__delete
+      parameters:
+      - name: search_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Search Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/roots/relocate:
+    post:
+      tags:
+      - curation
+      summary: Relocate
+      operationId: relocate_api_v1_admin_roots_relocate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Relocate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/admin/failures:
+    get:
+      tags:
+      - curation
+      summary: Failures
+      operationId: failures_api_v1_admin_failures_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/retry:
+    post:
+      tags:
+      - curation
+      summary: Retry
+      operationId: retry_api_v1_admin_retry_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/quality:
+    post:
+      tags:
+      - curation
+      summary: Scan Quality
+      operationId: scan_quality_api_v1_admin_quality_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/admin/curation/verify:
+    post:
+      tags:
+      - curation
+      summary: Verify Backup
+      operationId: verify_backup_api_v1_admin_curation_verify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Data
+        required: true
       responses:
         '200':
           description: Successful Response
@@ -1635,6 +1842,22 @@ components:
       required:
       - name
       title: AlbumRenameRequest
+    Annotation:
+      properties:
+        favorite:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Favorite
+        rating:
+          anyOf:
+          - type: integer
+            maximum: 5.0
+            minimum: 0.0
+          - type: 'null'
+          title: Rating
+      type: object
+      title: Annotation
     AssignFacesRequest:
       properties:
         face_ids:
@@ -1763,6 +1986,24 @@ components:
       title: HidePersonRequest
     ImageSummary:
       properties:
+        favorite:
+          type: boolean
+          title: Favorite
+          default: false
+        rating:
+          type: integer
+          title: Rating
+          default: 0
+        quality_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Quality Score
+        quality_reasons:
+          items:
+            type: string
+          type: array
+          title: Quality Reasons
         image_id:
           type: integer
           title: Image Id
@@ -1837,7 +2078,7 @@ components:
         rebuild:
           type: boolean
           title: Rebuild
-          description: Drop the library and start over
+          description: Reprocess this folder, preserving IDs and curation; models must remain compatible
           default: false
         prune_missing:
           type: boolean
@@ -1960,6 +2201,24 @@ components:
           title: Knn
       type: object
       title: ReclusterRequest
+    Relocate:
+      properties:
+        old_folder:
+          type: string
+          title: Old Folder
+        new_folder:
+          type: string
+          title: New Folder
+        verification:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Verification
+      type: object
+      required:
+      - old_folder
+      - new_folder
+      title: Relocate
     RenamePersonRequest:
       properties:
         name:
@@ -1980,8 +2239,32 @@ components:
       required:
       - folder
       title: RootRequest
+    SavedSearch:
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Name
+        request:
+          $ref: '#/components/schemas/SearchRequest'
+      type: object
+      required:
+      - name
+      - request
+      title: SavedSearch
     SearchRequest:
       properties:
+        favorites_only:
+          type: boolean
+          title: Favorites Only
+          default: false
+        min_rating:
+          type: integer
+          maximum: 5.0
+          minimum: 0.0
+          title: Min Rating
+          default: 0
         query:
           anyOf:
           - type: string
@@ -2068,6 +2351,7 @@ components:
           type: string
           enum:
           - relevance
+          - quality
           - date_desc
           - date_asc
           - added_desc

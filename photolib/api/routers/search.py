@@ -49,7 +49,8 @@ def search(req: SearchRequest, service: PhotoService = Depends(get_service)):
     try:
         page = service.search(req.query, _filters(req), sort=req.sort,
                               page=req.page, per_page=req.per_page,
-                              min_score=req.min_score)
+                              min_score=req.min_score, favorites_only=req.favorites_only,
+                              min_rating=req.min_rating)
     except Exception as exc:
         logger.exception("Search failed")
         raise translate_errors(exc)
