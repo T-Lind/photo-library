@@ -7,11 +7,13 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-SortOption = Literal["relevance", "date_desc", "date_asc", "added_desc", "random"]
+SortOption = Literal["relevance", "quality", "date_desc", "date_asc", "added_desc", "random"]
 PeopleMode = Literal["any", "all"]
 
 
 class SearchRequest(BaseModel):
+    favorites_only: bool = False
+    min_rating: int = Field(0, ge=0, le=5)
     query: Optional[str] = Field(None, description="Natural-language description")
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
@@ -42,6 +44,10 @@ class SearchRequest(BaseModel):
 
 
 class ImageSummary(BaseModel):
+    favorite: bool = False
+    rating: int = 0
+    quality_score: Optional[float] = None
+    quality_reasons: List[str] = Field(default_factory=list)
     image_id: int
     filename: str = ""
     taken_at: Optional[str] = None
@@ -121,7 +127,7 @@ class FaceSearchRequest(BaseModel):
 
 class IndexRequest(BaseModel):
     folder: str = Field(..., description="Absolute path to a folder of photos")
-    rebuild: bool = Field(False, description="Drop the library and start over")
+    rebuild: bool = Field(False, description="Reprocess this folder, preserving IDs and curation; models must remain compatible")
     prune_missing: bool = Field(
         False, description="Remove indexed photos whose files are gone")
 

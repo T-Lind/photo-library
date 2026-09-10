@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0e0f11">
   <title>photolib</title>
   <link rel="stylesheet" href="/app.css">
+  <script src="/curation.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -104,13 +105,26 @@
             </label>
             <select id="sortSelect" class="select slim" aria-label="Sort photos">
               <option value="relevance">Best match</option>
+              <option value="quality">Best quality + match</option>
               <option value="date_desc">Newest first</option>
               <option value="date_asc">Oldest first</option>
               <option value="added_desc">Recently added</option>
               <option value="random">Shuffle</option>
             </select>
             <button id="clearFilters" class="btn ghost" type="button">Clear</button>
+            <label class="toggle mono"><input id="favoritesOnly" type="checkbox"> Favorites</label>
+            <select id="minRating" class="select slim" aria-label="Minimum rating">
+              <option value="0">Any rating</option><option value="1">1+ stars</option>
+              <option value="2">2+ stars</option><option value="3">3+ stars</option>
+              <option value="4">4+ stars</option><option value="5">5 stars</option>
+            </select>
           </div>
+          <form id="saveSearchForm" class="filterbar">
+            <input id="savedSearchName" class="field slim" maxlength="200" placeholder="Name this search" aria-label="Saved search name">
+            <button class="btn ghost" type="submit">Save search</button>
+            <select id="savedSearchSelect" class="select slim" aria-label="Saved searches"><option value="">Saved searches…</option></select>
+            <button id="deleteSavedSearch" class="btn ghost" type="button">Remove saved search</button>
+          </form>
 
           <div id="selectedPeople" class="chips hidden" aria-label="People in this search"></div>
           <div id="recentSearches" class="chips hidden" aria-label="Recent searches"></div>
@@ -206,12 +220,26 @@
               </div>
             </div>
             <div id="rootsList" class="roots-list"></div>
+            <div id="relocationReview" class="notice hidden" aria-live="polite"></div>
             <label class="check-row">
               <input id="pruneMissing" type="checkbox">
               During rescans, remove entries whose original files no longer exist
             </label>
           </section>
 
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Photo quality</h2><p>Measure sharpness, exposure and usable resolution. “Best quality + match” also considers the weakest selected face. These are suggestions, never automatic deletions.</p></div>
+              <button id="qualityScan" class="btn" type="button">Measure existing photos</button>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div><h2>Files needing attention</h2><p>Failed files stay here across restarts. Reconnect their drive or fix the file, then retry.</p></div>
+              <button id="retryFiles" class="btn" type="button">Retry failed files</button>
+            </div>
+            <div id="failedFiles" class="model-lines" aria-live="polite"></div>
+          </section>
           <section class="panel">
             <div class="panel-head">
               <div><h2>Text in photos</h2><p id="ocrCopy">Read the text inside screenshots and documents so searches match it exactly. Runs once per photo, entirely on this machine.</p></div>
@@ -230,7 +258,7 @@
 
           <section class="panel">
             <div class="panel-head">
-              <div><h2>Backup</h2><p>Person names, hidden people, and album contents — the work you did by hand. The index itself can always be rebuilt; this cannot. Photos are matched by content, so the backup still lines up after files move or the library is re-indexed.</p></div>
+              <div><h2>Backup</h2><p>Names, exact face corrections, albums, favorites, ratings and saved searches. Restore verifies the file and previews matches first. Originals and model weights need their own backup.</p></div>
               <div class="panel-actions">
                 <button id="curationExport" class="btn primary" type="button">Export backup</button>
                 <button id="curationImportBtn" class="btn" type="button">Restore…</button>
@@ -287,6 +315,15 @@
         </div>
       </div>
       <div id="modalExif" class="exif hidden"></div>
+      <div class="curation-controls">
+        <button id="modalFavorite" class="btn" type="button" aria-pressed="false">♡ Favorite</button>
+        <label>Rating <select id="modalRating" class="select slim" aria-label="Photo rating">
+          <option value="0">Unrated</option><option value="1">★</option><option value="2">★★</option>
+          <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+        </select></label>
+        <button id="modalBurst" class="btn" type="button">Compare burst</button>
+        <span id="modalQuality" class="quality-explanation"></span>
+      </div>
       <div id="modalFaces" class="modal-faces hidden">
         <div id="modalFacesRow" class="faces-row"></div>
         <div id="faceActions" class="face-actions hidden">
@@ -317,6 +354,12 @@
       <button id="selClear" class="btn ghost" type="button" title="Or press Escape">Clear</button>
     </div>
   </div>
+
+  <dialog id="burstDialog" class="burst-dialog" aria-label="Compare burst photos">
+    <div class="panel-head"><div><h2>Compare nearby shots</h2><p id="burstSummary"></p></div>
+      <button id="burstClose" class="btn" type="button">Close</button></div>
+    <div id="burstGrid" class="burst-grid"></div>
+  </dialog>
 
   <div id="shortcutModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
     <div class="modal-card shortcut-card">

@@ -39,6 +39,7 @@ from .hashing import content_hash, phash
 from .imageio import iter_image_files, load_rgb_array
 from .ocr import build_ocr
 from .thumbnails import ThumbnailCache
+from . import catalog, quality
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ class _Prepared:
     duration_ms: int = 0
     array: Optional[np.ndarray] = None
     error: Optional[str] = None
+    quality: Optional[dict] = None
 
 
 ProgressFn = Callable[[str, int, int, dict], None]
@@ -106,6 +108,7 @@ class Indexer:
         self.faces = face_backend or build_face_backend(self.settings)
         self.thumbs = thumbnails or ThumbnailCache(self.settings.thumbnail_cache_dir)
         self.progress = progress or (lambda *a, **k: None)
+        self._quality_rows = []
         try:
             self.ocr = build_ocr(self.settings)
         except Exception as exc:  # a broken OCR install must not stop indexing
@@ -135,30 +138,35 @@ class Indexer:
         """
         started = time.time()
         stats = IngestStats()
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
+        if prune_missing and limit is not None:
+            raise ValueError("prune_missing requires a complete scan; remove limit")
         root = Path(root).expanduser().resolve()
         if not root.is_dir():
             raise NotADirectoryError(f"{root} is not a directory")
 
+        # Finish discovery before any destructive writes, including rebuild.
+        self.progress("scanning", 0, 0, {"root": str(root)})
+        files = list(iter_image_files(root, self.settings.follow_symlinks))
+        files.sort()
+        if limit is not None:
+            files = files[:limit]
+        stats.scanned = len(files)
+
         meta = self.meta()
-        if rebuild or not self.library.initialised():
-            self.library.create(meta, drop_existing=rebuild)
+        if not self.library.initialised():
+            self.library.create(meta)
         else:
             self.library.verify_compatible(meta)
             self.library.ensure_media_columns()
 
-        self.progress("scanning", 0, 0, {"root": str(root)})
-        files = list(iter_image_files(root, self.settings.follow_symlinks))
-        files.sort()
-        if limit:
-            files = files[:limit]
-        stats.scanned = len(files)
-
         known = self._existing_files()
         todo: List[Path] = []
-        stale_ids: List[int] = []
+        replacements = []
         for p in files:
             key = str(p)
-            prior = known.get(key)
+            prior = known.get(catalog.path_key(key))
             if prior is None:
                 todo.append(p)
                 continue
@@ -168,53 +176,73 @@ class Indexer:
             except OSError:
                 stats.failed += 1
                 continue
-            if int(st.st_size) != size or abs(st.st_mtime - mtime) > 1.0:
-                todo.append(p)
-                stale_ids.append(image_id)   # re-index: drop the old row first
+            if rebuild or int(st.st_size) != size or abs(st.st_mtime - mtime) > 1.0:
+                replacements.append((p, image_id))
             else:
                 stats.skipped += 1
 
         if prune_missing:
-            present = {str(p) for p in files}
-            missing = [image_id for path, (image_id, _, _) in known.items()
-                       if path not in present and _under(path, root)]
+            present = {catalog.path_key(p) for p in files}
+            missing = []
+            for path, (image_id, _, _) in known.items():
+                if path in present or not _under(path, root):
+                    continue
+                # Decoder availability and scan exclusions can change. Only
+                # an absent file is removable; permission/IO errors abort.
+                try:
+                    Path(path).stat()
+                except FileNotFoundError:
+                    missing.append(image_id)
+            if not root.is_dir():
+                raise OSError(f"Source disappeared during scan: {root}")
             if missing:
                 self.remove_images(missing)
                 stats.removed = len(missing)
 
-        if stale_ids:
-            self.remove_images(stale_ids)
-            stats.updated = len(stale_ids)
+        for position, (path, image_id) in enumerate(replacements):
+            self.progress("updating", position, len(replacements), stats.as_dict())
+            self._replace(path, image_id, stats)
 
-        if not todo:
+        if not todo and not replacements:
             logger.info("Nothing to index: %d files already up to date", stats.skipped)
             stats.elapsed = time.time() - started
             self.progress("done", stats.scanned, stats.scanned, stats.as_dict())
             return stats
 
+        work_count = len(todo) + len(replacements)
         logger.info("Indexing %d new/changed files (%d unchanged)",
-                    len(todo), stats.skipped)
-        self._ingest(todo, stats)
+                    work_count, stats.skipped)
+        if todo:
+            self._ingest(todo, stats)
 
-        self.progress("indexing_vectors", len(todo), len(todo), {})
+        self.progress("indexing_vectors", work_count, work_count, {})
         report = self.library.build_indexes(self.settings.ann_min_rows)
         logger.info("Index build: %s", report)
 
         stats.elapsed = time.time() - started
-        self.progress("done", len(todo), len(todo), stats.as_dict())
+        self.progress("done", work_count, work_count, stats.as_dict())
         return stats
 
     def remove_images(self, image_ids: Sequence[int]) -> None:
         """Delete images, their faces, and their cached thumbnails."""
         if not image_ids:
             return
-        for start in range(0, len(image_ids), 4096):
-            chunk = image_ids[start:start + 4096]
-            ids = ", ".join(str(int(i)) for i in chunk)
-            self.library.images.delete(f"image_id IN ({ids})")
-            self.library.faces.delete(f"image_id IN ({ids})")
-            if self.library.has_ocr():
-                self.library.ocr.delete(f"image_id IN ({ids})")
+        self.library.next_id(IMAGES, "image_id")
+        self.library.next_id(FACES, "face_id")
+        with catalog.atomic(self.library):
+            for start in range(0, len(image_ids), 4096):
+                chunk = image_ids[start:start + 4096]
+                ids = ", ".join(str(int(i)) for i in chunk)
+                self.library.images.delete(f"image_id IN ({ids})")
+                self.library.faces.delete(f"image_id IN ({ids})")
+                if self.library.has_ocr():
+                    self.library.ocr.delete(f"image_id IN ({ids})")
+                if self.library.has_albums():
+                    self.library.album_items.delete(f"image_id IN ({ids})")
+                if quality.TABLE in self.library.table_names():
+                    self.library.table(quality.TABLE).delete(f"image_id IN ({ids})")
+                for image_id in chunk:
+                    catalog.delete(self.library, f"annotation:{image_id}")
         for image_id in image_ids:
             try:
                 self.thumbs.purge_image(int(image_id))
@@ -224,13 +252,10 @@ class Indexer:
     # -- internals -------------------------------------------------------
     def _existing_files(self) -> Dict[str, Tuple[int, int, float]]:
         """path -> (image_id, file_size, mtime) for everything already indexed."""
-        try:
-            tbl = self.library.images.to_lance().to_table(
-                columns=["image_id", "path", "file_size", "mtime"])
-        except Exception:
-            return {}
+        tbl = self.library.images.to_lance().to_table(
+            columns=["image_id", "path", "file_size", "mtime"])
         return {
-            row["path"]: (int(row["image_id"]), int(row["file_size"] or 0),
+            catalog.path_key(row["path"]): (int(row["image_id"]), int(row["file_size"] or 0),
                           float(row["mtime"] or 0.0))
             for row in tbl.to_pylist()
         }
@@ -266,6 +291,7 @@ class Indexer:
                 good = [p for p in prepared if p.error is None]
                 for bad in (p for p in prepared if p.error is not None):
                     stats.failed += 1
+                    self._failure(bad.path, bad.error)
                     if len(stats.errors) < 200:
                         stats.errors.append(f"{bad.path}: {bad.error}")
 
@@ -274,10 +300,13 @@ class Indexer:
                     detections = self._detect_faces(good, stats)
 
                     for prep, vector, faces in zip(good, vectors, detections):
-                        if vector is None:
+                        if vector is None or faces is None:
                             continue
                         image_id = next_image_id
                         next_image_id += 1
+                        # An interrupted, uncommitted batch may have warmed
+                        # this ID's cache. Never reuse that preview.
+                        self.thumbs.purge_image(image_id)
 
                         # Detection ran on a downscaled buffer; boxes are
                         # stored in original-image coordinates so that face
@@ -302,6 +331,7 @@ class Indexer:
                                              if o.person_id != UNASSIGNED})
                         image_rows.append(self._image_row(
                             image_id, prep, vector, people_ids, len(observations)))
+                        self._quality_rows.append({"image_id": image_id, **prep.quality})
                         face_rows.extend(self._face_row(o) for o in observations)
                         if prep.array is not None:
                             thumbnail_inputs.append((image_id, prep.path, prep.array))
@@ -332,14 +362,17 @@ class Indexer:
                                "faces": stats.faces_detected})
 
                 if len(image_rows) >= self.settings.write_batch_size:
-                    self._write(image_rows, face_rows, img_schema, face_schema,
-                                ocr_rows)
+                    with catalog.atomic(self.library):
+                        self._write(image_rows, face_rows, img_schema, face_schema,
+                                    ocr_rows)
+                        assigner.flush()
                     stats.added += len(image_rows)
                     image_rows, face_rows, ocr_rows = [], [], []
-                    assigner.flush()
 
         if image_rows:
-            self._write(image_rows, face_rows, img_schema, face_schema, ocr_rows)
+            with catalog.atomic(self.library):
+                self._write(image_rows, face_rows, img_schema, face_schema, ocr_rows)
+                assigner.flush()
             stats.added += len(image_rows)
         assigner.flush()
         stats.people_created = max(0, len(assigner.people) - people_before)
@@ -373,6 +406,7 @@ class Indexer:
                 media_type="video" if video else "image",
                 duration_ms=duration,
                 array=array,
+                quality=quality.measure(array, width, height),
             )
         except Exception as exc:
             return _Prepared(path=str(path), filename=path.name,
@@ -413,6 +447,7 @@ class Indexer:
                 out.append(self.embedder.embed_images([item])[0])
             except Exception as exc:
                 stats.failed += 1
+                self._failure(prep.path, f"Embedding failed: {exc}")
                 if len(stats.errors) < 200:
                     stats.errors.append(f"{prep.path}: embedding failed: {exc}")
                 out.append(None)
@@ -431,9 +466,11 @@ class Indexer:
             try:
                 out.append(self.faces.detect(arr))
             except Exception as exc:
+                stats.failed += 1
+                self._failure(prep.path, f"Face detection failed: {exc}")
                 if len(stats.errors) < 200:
                     stats.errors.append(f"{prep.path}: face detection failed: {exc}")
-                out.append([])
+                out.append(None)
         return out
 
     def _image_row(self, image_id: int, prep: _Prepared, vector: np.ndarray,
@@ -473,7 +510,7 @@ class Indexer:
             "x": int(x), "y": int(y), "w": int(w), "h": int(h),
             "det_score": float(obs.det_score),
             "quality": float(obs.quality),
-            "confirmed": False,
+            "confirmed": obs.confirmed,
             "crop_path": "",
         }
 
@@ -492,6 +529,114 @@ class Indexer:
             self.library.faces.add(pa.Table.from_pylist(face_rows, schema=face_schema))
         if ocr_rows:
             self.library.ocr.add(pa.Table.from_pylist(ocr_rows, schema=OCR_SCHEMA))
+        quality.save(self.library, self._quality_rows)
+        self._quality_rows = []
+        for row in image_rows:
+            catalog.delete(self.library, "failure:" + catalog.path_key(row["path"]))
+
+    def _failure(self, path, error):
+        catalog.put(self.library, "failure:" + catalog.path_key(path),
+                    {"path": str(path), "error": str(error), "updated_at": now_ms().isoformat()})
+
+    def retry_failed(self):
+        stats = IngestStats()
+        known = self._existing_files()
+        pending = list(catalog.records(self.library, "failure:").values())
+        new = []
+        for position, failure in enumerate(pending):
+            self.progress("retrying", position, len(pending), stats.as_dict())
+            path = Path(failure["path"])
+            stats.scanned += 1
+            prior = known.get(catalog.path_key(path))
+            if prior:
+                self._replace(path, prior[0], stats)
+            else:
+                new.append(path)
+        if new:
+            self._ingest(new, stats)
+        return stats.as_dict()
+
+    def _replace(self, path, image_id, stats):
+        """Prepare first; preserve IDs and corrections; commit recoverably."""
+        try:
+            prep = self._prepare(path)
+            if prep.error:
+                raise ValueError(prep.error)
+            old = self.library.images.search().where(f"image_id = {image_id}").limit(1).to_arrow().to_pylist()[0]
+            old_faces = self.library.faces.to_lance().to_table(filter=f"image_id = {image_id}").to_pylist()
+            face_version = self.library.faces.version
+            vector = self.embedder.embed_images([ImageInput(path=str(path), array=prep.array)])[0]
+            assigner = None
+            if old["content_hash"] == prep.content_hash:
+                face_rows = old_faces
+            else:
+                detected = self.faces.detect(prep.array)
+                next_id = self.library.next_id(FACES, "face_id")
+                observations = [FaceObservation(image_id, face.embedding,
+                    _scale_bbox(face.bbox, self._detection_scale(prep)), face.det_score,
+                    face.quality, next_id + i) for i, face in enumerate(detected)]
+                # Match corrected faces one-to-one. Ambiguity is a retry/review
+                # item, never permission to throw away the user's work.
+                used = set()
+                for previous in (f for f in old_faces if f["confirmed"]):
+                    candidates = []
+                    for i, obs in enumerate(observations):
+                        if i in used:
+                            continue
+                        a, b = np.asarray(previous["vector"]), obs.embedding
+                        similarity = float(np.dot(a, b) / max(np.linalg.norm(a)*np.linalg.norm(b), 1e-12))
+                        candidates.append((similarity, i))
+                    candidates.sort(reverse=True)
+                    if not candidates or candidates[0][0] < 0.8 or (len(candidates)>1 and candidates[0][0]-candidates[1][0]<0.08):
+                        raise ValueError("Changed photo needs face-correction review; catalog record retained")
+                    obs = observations[candidates[0][1]]
+                    used.add(candidates[0][1])
+                    obs.person_id, obs.confirmed = previous["person_id"], True
+                    obs.face_id = previous["face_id"]
+                assigner = FaceAssigner(self.library, self.faces.dim,
+                    match_threshold=self.settings.face_match_threshold,
+                    strong_threshold=self.settings.face_strong_match_threshold)
+                assigner.assign([o for o in observations if not o.confirmed])
+                face_rows = [self._face_row(o) for o in observations]
+            people = sorted({f["person_id"] for f in face_rows if f["person_id"] != UNASSIGNED})
+            row = self._image_row(image_id, prep, vector, people, len(face_rows))
+            row["added_at"], row["place"] = old["added_at"], old["place"]
+            text = self.ocr.extract(prep.array, prep.path) if self.ocr is not None else None
+            with catalog.atomic(self.library):
+                if self.library.faces.version != face_version:
+                    raise ValueError("Face corrections changed during reindexing; retry this file")
+                self.library.images.merge_insert("image_id").when_matched_update_all().execute(
+                    pa.Table.from_pylist([row], schema=images_schema(self.embedder.dim)))
+                self.library.faces.delete(f"image_id = {image_id}")
+                if face_rows:
+                    self.library.faces.add(pa.Table.from_pylist(face_rows, schema=faces_schema(self.faces.dim)))
+                if assigner:
+                    assigner.flush()
+                if self.library.has_ocr():
+                    self.library.ocr.delete(f"image_id = {image_id}")
+                if text is not None:
+                    from .db import OCR_SCHEMA
+                    self.library.ensure_ocr().add(pa.Table.from_pylist([dict(image_id=image_id,
+                        text=text, engine=self.ocr.name, updated_at=now_ms())], schema=OCR_SCHEMA))
+                quality.save(self.library, [{"image_id": image_id, **prep.quality}])
+                catalog.delete(self.library, "failure:" + catalog.path_key(path))
+                # Recompute only touched identities; do not double-count
+                # faces absorbed by the incremental assigner during replacement.
+                from .service import PhotoService
+                service = PhotoService(self.settings, self.library, self.embedder, self.faces)
+                for pid in {f["person_id"] for f in old_faces + face_rows} - {UNASSIGNED}:
+                    service._recompute_person(pid)
+            self.thumbs.purge_image(image_id)
+            for face in old_faces:
+                self.thumbs.face_path(face["face_id"]).unlink(missing_ok=True)
+            if self.settings.pregenerate_thumbnails:
+                self.thumbs.pregenerate_from_array(image_id, prep.path, prep.array)
+            stats.updated += 1
+        except Exception as exc:
+            stats.failed += 1
+            self._failure(path, exc)
+            if len(stats.errors) < 200:
+                stats.errors.append(f"{path}: {exc}")
 
 
 def _scale_bbox(bbox: Tuple[int, int, int, int], scale: float
@@ -505,6 +650,8 @@ def _scale_bbox(bbox: Tuple[int, int, int, int], scale: float
 
 def _under(path: str, root: Path) -> bool:
     try:
-        return Path(path).resolve().is_relative_to(root)
+        # Indexed paths already have an absolute, resolved root. Membership
+        # must not stat every file on every other (possibly offline) drive.
+        return Path(path).is_relative_to(root)
     except (OSError, ValueError):
         return False

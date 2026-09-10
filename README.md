@@ -28,6 +28,17 @@ and organize albums in a desktop app built for real family libraries of
 - **Date, place, folder, and person filters** with a month-by-month timeline.
 - **Incremental indexing** — point it at a folder as often as you like; only
   new and changed files cost anything.
+- **Safe reprocessing** — changed files keep their photo IDs, albums, ratings,
+  favorites, and confidently matched face corrections. Failures stay queued
+  for retry instead of replacing a good catalog record.
+- **Best-photo ranking** — combine semantic relevance with fixed-scale
+  sharpness, exposure, usable resolution, and the weakest selected person's
+  face quality. Compare nearby burst shots and pick a favorite without deleting.
+- **Multiple sources** — keep originals across several drives, browse cached
+  previews while one is offline, and verify every file before relinking a
+  moved folder or changed drive letter.
+- **Curation** — favorites, 0–5 star ratings, saved searches, albums, and a
+  checksummed backup containing exact confirmed face assignments.
 
 ![Photolib people view](docs/images/photolib-people.png)
 
@@ -103,20 +114,21 @@ tiles are loaded in-app.
 | Image / text (packaged) | the same model, exported to hybrid INT8 ONNX | Drops PyTorch and reduces the bundled model by about 45% while enforcing 0.98 cosine parity; an FP32 build remains available for comparisons |
 | Faces | InsightFace `buffalo_l` (RetinaFace + ArcFace `w600k_r50`) | Far more accurate than dlib on profiles, poor light, and children; batched ONNX inference with optional GPU |
 
-Both are swappable through configuration. Larger embedding models are a
-one-line change if you have a GPU:
+Both are swappable for a new library. A larger embedding model can be selected
+before the first index if you have a GPU:
 
 ```bash
 # best quality, ~1.1 GB, 1152-dim
-PHOTO_EMBED_MODEL=google/siglip2-so400m-patch14-384 python -m photolib.cli index ~/Pictures --rebuild
+PHOTO_EMBED_MODEL=google/siglip2-so400m-patch14-384 python -m photolib.cli index ~/Pictures
 
 # OpenCLIP / LAION / MetaCLIP checkpoints
 PHOTO_EMBED_BACKEND=open_clip PHOTO_EMBED_MODEL=ViT-H-14-quickgelu:dfn5b ...
 ```
 
-Changing the embedding model invalidates the stored vectors, so it requires
-`--rebuild`. The library refuses to index with a mismatched model rather than
-silently mixing incompatible vectors.
+The library refuses to mix vectors from different models. `--rebuild` safely
+reprocesses the selected source with the configured compatible models while
+preserving photo IDs and curation; changing models requires creating a separate
+catalog and restoring a verified curation backup.
 
 ## Configuration
 
@@ -156,6 +168,7 @@ Everything is under `/api/v1`. Full schema at `/docs`.
 - `GET  /search?q=...` — the same, as a bookmarkable URL
 - `POST /search/by-image` — reverse image search from an upload
 - `GET  /timeline`, `GET /folders`
+- `GET/POST/DELETE /saved-searches` — reusable searches, including people and quality
 
 **Images**
 - `GET /images/{id}` — the original file
@@ -163,6 +176,8 @@ Everything is under `/api/v1`. Full schema at `/docs`.
 - `GET /images/{id}/details` — metadata, people, and face boxes
 - `GET /images/{id}/similar` — visually similar photos
 - `GET /images/{id}/faces`
+- `PATCH /images/{id}/annotation` — favorite and 0–5 star rating
+- `GET /images/{id}/burst` — nearby similar shots with a suggested keeper
 
 **People**
 - `GET/PATCH/DELETE /people/{id}`, `GET /people`
@@ -181,6 +196,10 @@ Everything is under `/api/v1`. Full schema at `/docs`.
 - `POST /admin/recluster`, `POST /admin/compact`
 - `GET  /admin/jobs`, `GET /admin/jobs/{id}`, `DELETE /admin/jobs/{id}`
 - `GET  /admin/models`, `POST /admin/models/fetch` — weight status and download
+- `GET /admin/failures`, `POST /admin/retry` — persistent failed-file queue
+- `POST /admin/quality` — resumable quality backfill for existing libraries
+- `POST /admin/roots/relocate` — verify, preview, then apply a source relocation
+- `GET/POST /admin/curation`, `POST /admin/curation/verify` — checksummed backup/restore
 - `GET  /admin/duplicates`, `GET /stats`, `GET /health`
 
 If a built UI is present (bundled, or `PHOTO_WEB_DIR`), the API also serves it
@@ -191,8 +210,10 @@ at `/`. That is how the desktop app runs as a single process on one port.
 The design targets a library that does not fit in a naive query pattern.
 
 **Browse index.** A columnar NumPy snapshot of image id, capture date,
-people, coordinates, and face count lives in memory — about 6 MB for 200k
-photos. Filtering, sorting, and pagination happen there, and only the ~60
+people, coordinates, and face count lives in memory, alongside Python maps,
+folder/camera strings, and OCR text. Budget tens of MB or more at 200k photos;
+the arrays alone do not describe total memory use. Filtering, sorting, and
+pagination happen there, and only the ~60
 rows actually on screen are read from the database. Jumping to page 3000
 costs the same as page 1.
 
@@ -200,6 +221,9 @@ costs the same as page 1.
 distance, which is what SigLIP and ArcFace are trained for. IVF_PQ parameters
 are sized from the row count (~√n partitions); below a few thousand rows the
 index is skipped because a brute-force scan is genuinely faster.
+Filtered subsets of at most 4096 photos are ranked exactly by cosine similarity
+using their image IDs, avoiding a library-wide candidate fetch for rare person
+combinations. Larger subsets still use approximate search and over-fetching.
 
 **Faces.** Each face is a row with its own embedding, bounding box, and
 quality score, so "every photo with this face" is one ANN query. Identity
@@ -211,10 +235,21 @@ feeds the embedder, face detector, perceptual hash, OCR, and thumbnail writer.
 The original file is streamed separately for its exact duplicate hash.
 Metadata and IO run on a thread pool while model batches run on the accelerator.
 Work is committed in batches, so an interrupted run resumes.
+Decoded image buffers are bounded, but discovery currently materializes the
+file list and existing-file map; total indexing memory still grows with the
+number of files.
 
 **Thumbnails.** WebP, generated on demand and cached in sharded directories
 (no single directory ever holds 200k files), served with strong ETags so a
 scrolling grid revalidates instead of re-downloading.
+Existing cached thumbnails and face crops remain available when an original
+drive is disconnected; uncached sizes and originals require reconnecting it.
+
+Multiple source folders can share one catalog. Their paths are currently
+absolute, so changing drive letters or moving folders requires further handling.
+Pruning requires a complete, error-free scan and is scoped to the selected root.
+See the [scale and search review](docs/scale-and-search-review.md) for remaining
+limitations and the proposed approach to finding the best photo of selected people.
 
 ## Face recognition
 
@@ -273,10 +308,11 @@ index at 200k photos.
 ## Migrating from v1
 
 The schema changed (per-face rows, numeric coordinates, normalised vectors),
-and the old face-cluster JSON sidecar is gone. Re-index once:
+and the old face-cluster JSON sidecar is gone. Build a new v2 catalog, then use
+the desktop backup restore workflow to carry over compatible curation.
 
 ```bash
-python -m photolib.cli index ~/Pictures --rebuild
+PHOTO_DB_URI=data/library-v2 python -m photolib.cli index ~/Pictures
 ```
 
 ## Licence

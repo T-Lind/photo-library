@@ -195,11 +195,11 @@ def ocr_status(service: PhotoService = Depends(get_service)):
 
 @router.get("/admin/curation")
 def export_curation(service: PhotoService = Depends(get_service)):
-    """Back up the hand-made data: person names, hidden flags, albums.
+    """Create a checksummed backup of all hand-made curation.
 
-    Keyed by content hash, so the backup survives file moves and a full
-    re-index. Face-level assignments are not included — they cannot be
-    reconstructed once face ids change.
+    Photos are matched by content hash and path. Confirmed face assignments
+    also carry their exact bounding boxes, preserving identity splits and
+    confirmed unassigned faces across a rebuild when those faces still match.
     """
     try:
         return service.export_curation()
@@ -210,7 +210,7 @@ def export_curation(service: PhotoService = Depends(get_service)):
 @router.post("/admin/curation")
 def import_curation(data: dict = Body(...),
                     service: PhotoService = Depends(get_service)):
-    """Restore a curation backup: albums exactly, people by photo overlap."""
+    """Verify and restore matched curation without guessing conflicts."""
     try:
         return service.import_curation(data)
     except Exception as exc:

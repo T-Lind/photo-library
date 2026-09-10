@@ -173,6 +173,8 @@ class Library:
         self.uri = uri
         self._db = lancedb.connect(uri)
         self._lock = threading.RLock()
+        from .catalog import recover
+        recover(self)
 
     # -- connection ------------------------------------------------------
     @property
@@ -286,9 +288,11 @@ class Library:
         """Create the tables. With drop_existing, wipe anything already there."""
         with self._lock:
             if drop_existing:
-                for name in (IMAGES, FACES, PEOPLE, META):
-                    if name in self.table_names():
-                        self._db.drop_table(name)
+                # Internal escape hatch for explicit catalog replacement. Drop
+                # every dependent table so numeric references cannot survive
+                # into an unrelated index. Normal --rebuild no longer uses it.
+                for name in self.table_names():
+                    self._db.drop_table(name)
 
             existing = set(self.table_names())
             if IMAGES not in existing:
@@ -336,10 +340,15 @@ class Library:
         import pyarrow.compute as pc
 
         tbl = self._db.open_table(table_name)
-        if tbl.count_rows(None) == 0:
-            return 0
-        arr = tbl.to_lance().to_table(columns=[column])[column]
-        return int(pc.max(arr).as_py()) + 1
+        from . import catalog
+        stored = catalog.records(self, "next-id:").get(table_name, 0)
+        maximum = -1
+        if tbl.count_rows(None):
+            arr = tbl.to_lance().to_table(columns=[column])[column]
+            maximum = int(pc.max(arr).as_py())
+        value = max(stored, maximum + 1)
+        catalog.put(self, f"next-id:{table_name}", value + 1)
+        return value
 
     # -- indexes ---------------------------------------------------------
     def build_indexes(self, min_rows: int, force: bool = False) -> Dict[str, str]:

@@ -18,13 +18,15 @@ import numpy as np
 
 from .browse import Filters, LibraryIndex
 from .config import Settings, get_settings
-from .db import (FACES, IMAGE_LIST_COLUMNS, Library, UNASSIGNED, now_ms)
+from .db import (FACES, IMAGES, IMAGE_LIST_COLUMNS, Library, UNASSIGNED, now_ms)
 from .embeddings import Embedder, build_embedder
 from .faces import FaceBackend, build_face_backend
 from .faces.cluster import recluster, suggest_for_person
 from .hashing import group_near_duplicates
 from .jobs import JobManager
 from .thumbnails import ThumbnailCache
+from .features import LibraryFeatures
+from . import catalog
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +69,7 @@ class SearchPage:
     scored: bool = False
 
 
-class PhotoService:
+class PhotoService(LibraryFeatures):
     def __init__(self, settings: Optional[Settings] = None,
                  library: Optional[Library] = None,
                  embedder: Optional[Embedder] = None,
@@ -123,7 +125,8 @@ class PhotoService:
     # ------------------------------------------------------------------
     def search(self, query: Optional[str], filters: Filters, sort: str = "date_desc",
                page: int = 1, per_page: Optional[int] = None,
-               min_score: Optional[float] = None) -> SearchPage:
+               min_score: Optional[float] = None, favorites_only: bool = False,
+               min_rating: int = 0) -> SearchPage:
         import time
 
         started = time.perf_counter()
@@ -132,6 +135,11 @@ class PhotoService:
                        self.settings.max_page_size)
 
         allowed = self.index.select(filters)
+        if favorites_only or min_rating:
+            annotations = self.annotations()
+            allowed = np.asarray([r for r in allowed if
+                (not favorites_only or annotations.get(int(self.index.image_ids[r]), {}).get("favorite", False))
+                and annotations.get(int(self.index.image_ids[r]), {}).get("rating", 0) >= min_rating], dtype=np.int64)
         has_query = bool(query and query.strip())
 
         score_of: Dict[int, float] = {}
@@ -144,7 +152,7 @@ class PhotoService:
             # fine print, so text matches rank ahead of semantic ones.
             text_rows = self._text_rows(query.strip(), allowed)
             text_set = {int(r) for r in text_rows}
-            if sort == "relevance":
+            if sort in ("relevance", "quality"):
                 score_of = {int(r): float(s)
                             for r, s in zip(sem_rows, sem_scores)}
                 rest = (sem_rows[~np.isin(sem_rows, text_rows)]
@@ -160,12 +168,18 @@ class PhotoService:
             ordered = self.index.order(
                 allowed, "date_desc" if sort == "relevance" else sort)
 
+        quality_details = {}
+        if sort == "quality":
+            relevance = {**score_of, **{r: 1.0 for r in text_set}} if has_query else None
+            ordered, quality_details = self.rank_quality(ordered, filters.people_ids, relevance)
         total = int(ordered.shape[0])
         start = (page - 1) * per_page
         window = ordered[start:start + per_page]
         image_ids = self.index.ids_of(window)
 
         results = self.hydrate(image_ids)
+        for item in results:
+            item.update(quality_details.get(item["image_id"], {}))
         if has_query:
             for item, row in zip(results, window.tolist()):
                 if int(row) in text_set:
@@ -180,6 +194,8 @@ class PhotoService:
 
     def _semantic_rows(self, query: str, allowed: np.ndarray,
                        min_score: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
+        if allowed.size == 0:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
         vector = self.embedder.embed_texts([query])[0]
         return self._vector_rows(vector, allowed, min_score)
 
@@ -196,12 +212,16 @@ class PhotoService:
                      limit: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
         """Rank ``allowed`` rows against a query vector using the ANN index.
 
-        Filtering happens on the in-memory mask rather than in a SQL
-        prefilter: LanceDB's prefilter would force a scan of the metadata for
-        every probe, and the mask is a single NumPy lookup.
+        Small filtered subsets are ranked exactly using the image-id scalar
+        index. Broader searches use ANN and an in-memory membership mask.
         """
         self.index.ensure_fresh()
         limit = limit or self.settings.max_candidates
+        if allowed.size == 0:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
+        if allowed.size <= 4096 and allowed.size < self.index.count:
+            return self._rank_subset(vector, allowed, min_score,
+                                     exclude_image_id, limit)
         # Over-fetch when a filter is active so the page can still be filled
         # after the mask removes non-matching hits.
         library_size = max(self.index.count, 1)
@@ -247,6 +267,42 @@ class PhotoService:
                 break
 
         return np.asarray(rows, dtype=np.int64), np.asarray(scores, dtype=np.float32)
+
+    def _rank_subset(self, vector: np.ndarray, allowed: np.ndarray,
+                     min_score: Optional[float], exclude_image_id: Optional[int],
+                     limit: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Exact cosine ranking of at most 4096 already-filtered photos.
+
+        A rare person pair must not require fetching 200k global ANN hits,
+        or lose relevant photos because they weren't in those global hits.
+        Arrow keeps the bounded vector batch out of Python float lists.
+        """
+        ids = self.index.ids_of(allowed)
+        id_list = ", ".join(str(i) for i in ids)
+        table = (self.library.images.search()
+                 .where(f"image_id IN ({id_list})")
+                 .select(["image_id", "vector"])
+                 .limit(len(ids)).to_arrow())
+        if table.num_rows == 0:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
+        image_ids = table["image_id"].to_numpy()
+        vectors = table["vector"].combine_chunks()
+        matrix = vectors.values.to_numpy().reshape(len(image_ids), -1)
+        query = np.asarray(vector, dtype=np.float32)
+        denom = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query)
+        scores = (matrix @ query) / np.maximum(denom, 1e-12)
+        keep = np.isfinite(scores)
+        if min_score is not None:
+            keep &= scores >= min_score
+        if exclude_image_id is not None:
+            keep &= image_ids != exclude_image_id
+        positions = np.flatnonzero(keep)
+        order = np.lexsort((image_ids[positions], -scores[positions]))[:limit]
+        positions = positions[order]
+        row_map = self.index.row_map()
+        rows = np.asarray([row_map[int(i)] for i in image_ids[positions]],
+                          dtype=np.int64)
+        return rows, np.asarray(scores[positions], dtype=np.float32)
 
     def search_by_image(self, image_path: os.PathLike | str, filters: Filters,
                         page: int = 1, per_page: Optional[int] = None) -> SearchPage:
@@ -303,7 +359,9 @@ class PhotoService:
             .to_pylist()
         )
         by_id = {int(r["image_id"]): _image_dict(r) for r in rows}
-        return [by_id[i] for i in ids if i in by_id]
+        annotations = self.annotations(ids)
+        return [{**by_id[i], **annotations.get(i, {"favorite": False, "rating": 0})}
+                for i in ids if i in by_id]
 
     def _image_row(self, image_id: int, columns: List[str]) -> dict:
         rows = (
@@ -348,6 +406,8 @@ class PhotoService:
         details["people"] = list(seen.values())
         details["faces"] = faces
         details["ocr_text"] = self._ocr_excerpt(image_id)
+        details.update(self.annotations([image_id]).get(image_id, {"favorite": False, "rating": 0}))
+        details.update(self.quality_scores([image_id])[image_id])
         return details
 
     def _ocr_excerpt(self, image_id: int, limit: int = 800) -> str:
@@ -460,6 +520,7 @@ class PhotoService:
             raise NotFound(f"Person {person_id} not found")
         return {**person, "photo_count": self.index.person_counts().get(int(person_id), 0)}
 
+    @catalog.serialized
     def rename_person(self, person_id: int, name: str) -> dict:
         self.get_person(person_id)
         self.library.people.update(where=f"person_id = {int(person_id)}",
@@ -467,6 +528,7 @@ class PhotoService:
         self._people_cache = None
         return self.get_person(person_id)
 
+    @catalog.serialized
     def set_person_hidden(self, person_id: int, hidden: bool) -> dict:
         self.get_person(person_id)
         self.library.people.update(where=f"person_id = {int(person_id)}",
@@ -474,6 +536,7 @@ class PhotoService:
         self._people_cache = None
         return self.get_person(person_id)
 
+    @catalog.serialized
     def merge_people(self, source_id: int, target_id: int) -> dict:
         if source_id == target_id:
             raise ValueError("Cannot merge a person into themselves")
@@ -488,6 +551,7 @@ class PhotoService:
         self._people_cache = None
         return self.get_person(target_id)
 
+    @catalog.serialized
     def delete_person(self, person_id: int) -> dict:
         """Forget an identity; its faces go back to the unassigned pool."""
         self.get_person(person_id)
@@ -525,6 +589,7 @@ class PhotoService:
             "confirmed": bool(r["confirmed"]),
         }
 
+    @catalog.serialized
     def assign_faces(self, face_ids: Sequence[int], person_id: Optional[int],
                      name: Optional[str] = None) -> dict:
         """Move faces to a person (or to a brand-new one when ``person_id`` is None).
@@ -556,6 +621,7 @@ class PhotoService:
         self._people_cache = None
         return {"updated": len(ids), "person_id": int(person_id)}
 
+    @catalog.serialized
     def detach_faces(self, face_ids: Sequence[int]) -> dict:
         """Mark faces as not-this-person, returning them to the unassigned pool."""
         ids = [int(f) for f in face_ids]
@@ -789,11 +855,9 @@ class PhotoService:
     def _recompute_person(self, person_id: int) -> None:
         """Refresh a person's centroid, cover face, and count from their faces."""
         rows = (
-            self.library.faces.search()
-            .where(f"person_id = {int(person_id)}")
-            .select(["face_id", "vector", "quality"])
-            .limit(10_000)
-            .to_arrow()
+            self.library.faces.to_lance().to_table(
+                filter=f"person_id = {int(person_id)}",
+                columns=["face_id", "vector", "quality"])
             .to_pylist()
         )
         if not rows:
@@ -958,6 +1022,7 @@ class PhotoService:
     # ------------------------------------------------------------------
     # Trash
     # ------------------------------------------------------------------
+    @catalog.serialized
     def trash_images(self, image_ids: Sequence[int]) -> dict:
         """Move originals to the OS trash and drop every trace from the library.
 
@@ -1085,15 +1150,23 @@ class PhotoService:
         """Delete images plus every dependent row and cached thumbnail."""
         if not image_ids:
             return
-        for start in range(0, len(image_ids), 4096):
-            chunk = image_ids[start:start + 4096]
-            ids = ", ".join(str(int(i)) for i in chunk)
-            self.library.images.delete(f"image_id IN ({ids})")
-            self.library.faces.delete(f"image_id IN ({ids})")
-            if self.library.has_ocr():
-                self.library.ocr.delete(f"image_id IN ({ids})")
-            if self.library.has_albums():
-                self.library.album_items.delete(f"image_id IN ({ids})")
+        self.library.next_id(IMAGES, "image_id")
+        self.library.next_id(FACES, "face_id")
+        with catalog.atomic(self.library):
+            for start in range(0, len(image_ids), 4096):
+                chunk = image_ids[start:start + 4096]
+                ids = ", ".join(str(int(i)) for i in chunk)
+                self.library.images.delete(f"image_id IN ({ids})")
+                self.library.faces.delete(f"image_id IN ({ids})")
+                if self.library.has_ocr():
+                    self.library.ocr.delete(f"image_id IN ({ids})")
+                if self.library.has_albums():
+                    self.library.album_items.delete(f"image_id IN ({ids})")
+                from . import quality
+                if quality.TABLE in self.library.table_names():
+                    self.library.table(quality.TABLE).delete(f"image_id IN ({ids})")
+                for image_id in chunk:
+                    catalog.delete(self.library, f"annotation:{image_id}")
         for image_id in image_ids:
             try:
                 self.thumbs.purge_image(int(image_id))
@@ -1109,6 +1182,7 @@ class PhotoService:
     # moves, renames, and a full rebuild (which renumbers every image_id
     # and person_id).
 
+    @catalog.serialized
     def export_curation(self) -> dict:
         self.require_ready()
         self.index.ensure_fresh()
@@ -1140,16 +1214,24 @@ class PhotoService:
                 "photos": [hash_of[i] for i in members if i in hash_of],
             })
 
-        return {
+        from .backup import extend
+        return extend(self, {
             "format": "photolib-curation",
             "version": 1,
             "exported_at": now_ms().isoformat(),
             "people": people_out,
             "albums": albums_out,
             "roots": self._read_roots(),
-        }
+        })
 
+    @catalog.serialized
     def import_curation(self, data: dict) -> dict:
+        if data.get("version") == 2:
+            from .backup import restore
+            return restore(self, data)
+        return self._import_curation_legacy(data)
+
+    def _import_curation_legacy(self, data: dict) -> dict:
         """Restore a curation backup into the current library.
 
         Albums restore exactly (matched by content_hash). People are
@@ -1275,6 +1357,9 @@ class PhotoService:
     def _read_roots(self) -> List[str]:
         import json
 
+        saved = catalog.records(self.library, "roots:").get("list")
+        if saved is not None:
+            return saved
         try:
             data = json.loads(self._roots_file().read_text(encoding="utf-8"))
             roots = data.get("roots", [])
@@ -1283,11 +1368,7 @@ class PhotoService:
             return []
 
     def _write_roots(self, roots: List[str]) -> None:
-        import json
-
-        path = self._roots_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"roots": roots}, indent=2), encoding="utf-8")
+        catalog.put(self.library, "roots:list", roots)
 
     def list_roots(self) -> List[dict]:
         roots = self._read_roots()
@@ -1300,8 +1381,11 @@ class PhotoService:
                     1 for folder in self.index.folders
                     if (n := folder.replace("\\", "/").rstrip("/")) == prefix
                     or n.startswith(prefix + "/"))
+        sources = catalog.records(self.library, "source:")
+        source_of = {catalog.path_key(v["path"]): k for k, v in sources.items()}
         return [{
             "path": root,
+            "source_id": source_of.get(catalog.path_key(root)),
             "exists": Path(root).is_dir(),
             "photo_count": counts.get(root, 0),
         } for root in roots]
@@ -1316,6 +1400,10 @@ class PhotoService:
         if resolved.lower() not in [r.lower() for r in roots]:
             roots.append(resolved)
             self._write_roots(roots)
+        if not any(catalog.path_key(v["path"]) == catalog.path_key(resolved)
+                   for v in catalog.records(self.library, "source:").values()):
+            import uuid
+            catalog.put(self.library, f"source:{uuid.uuid4().hex}", {"path": resolved})
         return self.list_roots()
 
     def remove_root(self, folder: str) -> List[dict]:
@@ -1413,6 +1501,7 @@ class PhotoService:
             raise NotFound(f"Album {album_id} not found")
         return album
 
+    @catalog.serialized
     def create_album(self, name: str) -> dict:
         import pyarrow as pa
 
@@ -1428,12 +1517,14 @@ class PhotoService:
         }], schema=ALBUMS_SCHEMA))
         return self.get_album(album_id)
 
+    @catalog.serialized
     def rename_album(self, album_id: int, name: str) -> dict:
         self.get_album(album_id)
         self.library.albums.update(where=f"album_id = {int(album_id)}",
                                    values={"name": name.strip()})
         return self.get_album(album_id)
 
+    @catalog.serialized
     def delete_album(self, album_id: int) -> dict:
         self.get_album(album_id)
         self.library.album_items.delete(f"album_id = {int(album_id)}")
@@ -1459,6 +1550,7 @@ class PhotoService:
         ids = self.album_image_ids(album_id)[:limit]
         return {**album, "images": self.hydrate(ids)}
 
+    @catalog.serialized
     def add_album_items(self, album_id: int, image_ids: Sequence[int]) -> dict:
         import pyarrow as pa
 
@@ -1477,6 +1569,7 @@ class PhotoService:
                 for i in fresh], schema=ALBUM_ITEMS_SCHEMA))
         return {"added": len(fresh), **self.get_album(album_id)}
 
+    @catalog.serialized
     def remove_album_items(self, album_id: int, image_ids: Sequence[int]) -> dict:
         self.get_album(album_id)
         ids = [int(i) for i in image_ids]

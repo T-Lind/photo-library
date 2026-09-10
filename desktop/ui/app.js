@@ -33,6 +33,7 @@ const state = {
   selectionScope: "photos", // "photos" or "album" — where the picks live
   trashArmed: false,
   imageQuery: null,       // {url, label, blob} — active search-by-image chip
+  savedFilterExtras: {},  // filters restored from a saved search without a dedicated control
   modalTrashArmed: false, // Delete pressed once in the viewer, awaiting confirm
 };
 
@@ -508,6 +509,8 @@ function currentFilters() {
   const to = $("dateTo").value;
   return {
     start_date: from ? `${from}T00:00:00` : null,
+    favorites_only: $("favoritesOnly").checked,
+    min_rating: Number($("minRating").value),
     end_date: to ? `${to}T23:59:59` : null,
     people_ids: state.selectedPeople,
     people_mode: state.selectedPeople.length > 1 ? state.peopleMode : "any",
@@ -522,6 +525,9 @@ function currentFilters() {
 }
 
 function clearFilters() {
+  $("favoritesOnly").checked = false;
+  $("minRating").value = "0";
+  state.savedFilterExtras = {};
   $("searchInput").value = "";
   $("dateFrom").value = "";
   $("dateTo").value = "";
@@ -554,6 +560,7 @@ async function search(page = 1, { keepPanel = false } = {}) {
       body: JSON.stringify({
         query: query || null,
         ...currentFilters(),
+        ...state.savedFilterExtras,
         sort: $("sortSelect").value,
         page,
         per_page: state.perPage,
@@ -624,6 +631,7 @@ function renderPhotos(result) {
         <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
         <span class="frame-no mono">${String(offset + i + 1).padStart(3, "0")}</span>
         ${videoBadge(photo)}
+        ${(photo.favorite || photo.rating) ? `<span class="curation-badge">${photo.favorite ? "♥ " : ""}${"★".repeat(photo.rating || 0)}</span>` : ""}
         <span class="photo-meta mono">
           <span>${escapeHtml(formatDate(photo.taken_at))}</span>
           <span>${photo.face_count ? `${photo.face_count}👤` : ""}</span>
@@ -987,6 +995,7 @@ async function openPhoto(imageId, filename = "") {
       details.width && details.height ? `${details.width}×${details.height}` : "",
     ].filter(Boolean).join(" · ").toUpperCase();
     renderExif(details);
+    renderPhotoCuration(details);
     renderModalFaces(details);
   } catch {
     $("modalName").textContent = filename || "Photo";
@@ -1802,6 +1811,7 @@ async function detachSelectedFaces() {
 // ---------------------------------------------------------------------------
 
 async function loadManageView() {
+  loadFailures();
   loadRoots();
   loadOcrStatus();
   refreshModels().catch(() => {});
@@ -1836,9 +1846,13 @@ function renderRoots() {
       <div class="root-actions">
         <button class="btn slim-btn" type="button" data-rescan="${i}" ${root.exists ? "" : "disabled"}>Rescan</button>
         <button class="btn ghost slim-btn" type="button" data-forget="${i}">Forget</button>
+        <button class="btn ghost slim-btn" type="button" data-relocate="${i}">Locate folder…</button>
       </div>
     </div>
   `).join("");
+  list.querySelectorAll("[data-relocate]").forEach(button => {
+    button.addEventListener("click", () => relocateFolder(state.roots[Number(button.dataset.relocate)]));
+  });
   list.querySelectorAll("[data-rescan]").forEach((button) => {
     button.addEventListener("click", async () => {
       const root = state.roots[Number(button.dataset.rescan)];
@@ -2332,6 +2346,10 @@ async function importCuration(file) {
   startLoad();
   try {
     const data = JSON.parse(await file.text());
+    if (data.version === 2) {
+      await previewRestore(data);
+      return;
+    }
     const report = await request("/admin/curation", {
       method: "POST",
       body: JSON.stringify(data),
@@ -2394,6 +2412,7 @@ async function loadCameras() {
 }
 
 async function loadLibrary() {
+  await loadSavedSearches();
   await Promise.all([loadPeople(), loadStats(), loadCameras(), loadTimeline()]);
   renderRecentSearches();
   renderSelectedPeople();
@@ -2414,6 +2433,7 @@ async function cancelJob() {
 }
 
 async function init() {
+  initCuration();
   $("folderPath").value = localStorage.getItem("photolib.lastFolder") || "";
   $("browseButton").addEventListener("click", () => chooseFolder(true));
   $("indexButton").addEventListener("click", startIndexFromSetup);

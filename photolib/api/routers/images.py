@@ -125,11 +125,10 @@ def get_thumbnail(image_id: int, request: Request,
         source = service.image_path(image_id)
     except Exception as exc:
         raise translate_errors(exc)
-    if not os.path.exists(source):
-        raise HTTPException(status_code=410, detail="Original file is missing")
-
     try:
         path = service.thumbs.get_thumbnail(image_id, source, size, format)
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="Original file is missing")
     except Exception as exc:
         logger.warning("Thumbnail generation failed for %s: %s", source, exc)
         raise HTTPException(status_code=500, detail=f"Thumbnail failed: {exc}")

@@ -109,11 +109,15 @@ class ThumbnailCache:
     @staticmethod
     def _fresh(target: Path, source: os.PathLike | str) -> bool:
         try:
-            if not target.exists():
-                return False
-            return target.stat().st_mtime >= os.path.getmtime(source)
+            cached_mtime = target.stat().st_mtime
         except OSError:
             return False
+        try:
+            return cached_mtime >= os.path.getmtime(source)
+        except FileNotFoundError:
+            # Keep already-generated previews usable on disconnected drives.
+            # Freshness is checked normally as soon as the source returns.
+            return True
 
     def _save(self, img: Image.Image, target: Path, fmt: str) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)

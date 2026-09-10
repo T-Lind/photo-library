@@ -42,7 +42,7 @@ def test_export_contains_the_hand_made_data(client):
 
     backup = client.get(f"{API}/admin/curation").json()
     assert backup["format"] == "photolib-curation"
-    assert backup["version"] == 1
+    assert backup["version"] == 2
 
     names = {p["name"] for p in backup["people"] if p["name"]}
     assert names == {"Alice", "Bob"}

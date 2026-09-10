@@ -123,11 +123,10 @@ def get_face_crop(face_id: int, request: Request,
     except Exception as exc:
         raise translate_errors(exc)
 
-    if not Path(source).exists():
-        raise HTTPException(status_code=410, detail="Original file is missing")
-
     try:
         path = service.thumbs.get_face_crop(face_id, source, tuple(face["bbox"]))
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="Original file is missing")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Face crop failed: {exc}")
 

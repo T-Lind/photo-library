@@ -118,7 +118,12 @@ def iter_image_files(root: os.PathLike | str, follow_symlinks: bool = False) -> 
     """
     root = Path(root)
     skip_dirs = {"@eaDir", ".thumbnails", "__pycache__"}
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
+    # A partial walk must never look like a complete inventory to pruning.
+    def scan_error(error: OSError) -> None:
+        raise error
+
+    for dirpath, dirnames, filenames in os.walk(
+            root, followlinks=follow_symlinks, onerror=scan_error):
         dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in skip_dirs]
         for name in filenames:
             if name.startswith("._") or name.startswith("."):
