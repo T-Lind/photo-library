@@ -13,6 +13,21 @@ from .db import Library
 from .service import PhotoService
 
 
+def _force_utf8_console() -> None:
+    """Emit UTF-8 no matter the console or locale.
+
+    ``openapi`` and ``stats`` print non-ASCII (em-dashes, arrows). On Windows
+    a redirected stdout defaults to cp1252, so the committed schema came out
+    as mojibake and failed the CI diff. Reconfiguring the streams makes the
+    output byte-identical across platforms.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -165,17 +180,25 @@ def cmd_openapi(args) -> int:
 
     spec = create_app().openapi()
     if args.format == "json":
-        print(json.dumps(spec, indent=2))
+        text = json.dumps(spec, indent=2) + "\n"
+    else:
+        try:
+            import yaml
+        except ImportError:
+            print("PyYAML is not installed; falling back to JSON.", file=sys.stderr)
+            text = json.dumps(spec, indent=2) + "\n"
+        else:
+            text = (
+                "# Generated from the FastAPI application — do not edit by hand.\n"
+                "# Regenerate with:  python -m photolib.cli openapi --out openapi.yaml\n"
+                + yaml.safe_dump(spec, sort_keys=False, width=100))
+
+    if args.out:
+        # Written directly as UTF-8 so a Windows shell redirection cannot
+        # transcode the em-dashes into mojibake and fail the CI diff.
+        Path(args.out).write_text(text, encoding="utf-8", newline="")
         return 0
-    try:
-        import yaml
-    except ImportError:
-        print("PyYAML is not installed; falling back to JSON.", file=sys.stderr)
-        print(json.dumps(spec, indent=2))
-        return 0
-    print("# Generated from the FastAPI application — do not edit by hand.")
-    print("# Regenerate with:  python -m photolib.cli openapi > openapi.yaml")
-    print(yaml.safe_dump(spec, sort_keys=False, width=100), end="")
+    sys.stdout.write(text)
     return 0
 
 
@@ -237,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("openapi", help="Print the OpenAPI schema")
     p.add_argument("--format", choices=["yaml", "json"], default="yaml")
+    p.add_argument("--out", default=None,
+                   help="Write UTF-8 to this file instead of stdout")
     p.set_defaults(func=cmd_openapi)
 
     p = sub.add_parser("serve", help="Run the API server")
@@ -250,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    _force_utf8_console()
     args = build_parser().parse_args(argv)
     _setup_logging(args.verbose)
     return args.func(args)

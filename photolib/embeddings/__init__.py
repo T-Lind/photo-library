@@ -8,17 +8,21 @@ normalised ``(n, dim)`` float32 array.
 from __future__ import annotations
 
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from ..config import Settings, get_settings
 from .base import Embedder, ImageInput, l2_normalize
+
+if TYPE_CHECKING:  # avoid importing pydantic/config for lightweight consumers
+    from ..config import Settings
 
 _instance: Optional[Embedder] = None
 _lock = threading.Lock()
 
 
-def build_embedder(settings: Optional[Settings] = None) -> Embedder:
+def build_embedder(settings: Optional["Settings"] = None) -> Embedder:
     """Construct (but do not load) the configured embedder."""
+    from ..config import get_settings
+
     s = settings or get_settings()
 
     if s.embed_backend == "stub":
