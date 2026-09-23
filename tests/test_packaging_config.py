@@ -71,10 +71,10 @@ def test_photo_navigation_replaces_the_displayed_media():
 
 
 def test_release_versions_stay_in_sync():
-    assert 'version = "2.0.2"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "2.0.2"' in (
+    assert 'version = "2.0.3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'version = "2.0.3"' in (
         ROOT / "desktop" / "src-tauri" / "Cargo.toml"
     ).read_text(encoding="utf-8")
-    assert '"version": "2.0.2"' in (
+    assert '"version": "2.0.3"' in (
         ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
     ).read_text(encoding="utf-8")

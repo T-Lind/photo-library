@@ -242,6 +242,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .face-tile .open-photo { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; opacity: 0; transition: opacity .15s ease; }
 .face-tile:hover .open-photo { opacity: 1; }
 .face-tile .open-photo:hover { background: var(--accent); color: var(--accent-ink); }
+.face-tile.is-cover { border-color: var(--accent); }
+.face-tile .cover-badge { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: rgba(0,0,0,.65); color: var(--accent); font-size: 10px; }
+.face-tile .set-cover { position: absolute; bottom: 2px; left: 2px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; background: rgba(0,0,0,.65); color: #fff; font-size: 12px; opacity: 0; transition: opacity .15s ease; }
+.face-tile:hover .set-cover { opacity: 1; }
+.face-tile .set-cover:hover { background: var(--accent); color: var(--accent-ink); }
 .face-tile.suggest { width: 76px; height: 76px; border-style: dashed; }
 .suggest-actions { position: absolute; inset: auto 0 0; display: flex; justify-content: space-between; padding: 3px; background: linear-gradient(transparent, rgba(0,0,0,.75)); }
 .mini-btn { width: 25px; height: 25px; padding: 0; display: grid; place-items: center; border-radius: 50%; border: none; font-size: 12px; font-weight: 800; }

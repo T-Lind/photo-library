@@ -273,3 +273,19 @@ def test_indexing_reuses_the_working_decode_for_hash_and_thumbnails(
         columns=["image_id"])["image_id"][0].as_py())
     assert service.thumbs.thumbnail_path(image_id, "small").exists()
     assert service.thumbs.thumbnail_path(image_id, "grid").exists()
+
+
+def test_cli_index_records_the_source_root(settings, photo_dir):
+    """A library built from the CLI must show up in the desktop Library tab."""
+    import argparse
+
+    from photolib import catalog, cli
+    from photolib.db import Library
+
+    args = argparse.Namespace(folder=str(photo_dir), rebuild=False,
+                              prune=False, limit=2)
+    assert cli.cmd_index(args) == 0
+
+    library = Library(settings.db_uri)
+    roots = catalog.records(library, "roots:").get("list", [])
+    assert str(photo_dir.resolve()) in roots

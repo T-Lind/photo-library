@@ -22,6 +22,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import catalog
 from .db import Library, OCR
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ class Filters:
     folder: Optional[str] = None
     camera: Optional[str] = None
     untagged_only: bool = False
+    # Curation filters, resolved from the columnar annotation arrays so a
+    # filtered browse never walks the whole catalog in Python.
+    favorites_only: bool = False
+    min_rating: int = 0
     # "Photos taken near here": centre + radius in km. All three or nothing.
     near_lat: Optional[float] = None
     near_lon: Optional[float] = None
@@ -55,6 +60,7 @@ class Filters:
                 and not self.people_ids and self.has_location is None
                 and self.has_faces is None and not self.folder
                 and not self.camera and not self.untagged_only
+                and not self.favorites_only and not self.min_rating
                 and self.near_lat is None and self.media is None)
 
 
@@ -80,6 +86,10 @@ class LibraryIndex:
         self.cameras: List[str] = []
         self.ocr_text: List[str] = []          # lowercase; "" = none/unscanned
         self.ocr_scanned = np.zeros(0, dtype=bool)
+        # Curation state, one entry per row. Loaded from catalog_records at
+        # rebuild time; annotation writes invalidate the snapshot.
+        self.favorites = np.zeros(0, dtype=bool)
+        self.ratings = np.zeros(0, dtype=np.int8)
         self._row_of_id: Dict[int, int] = {}
         self._rows_by_person: Dict[int, np.ndarray] = {}
         self._person_counts: Dict[int, int] = {}
@@ -157,6 +167,7 @@ class LibraryIndex:
         self._person_counts = {k: len(v) for k, v in by_person.items()}
 
         self._load_ocr(n)
+        self._load_annotations(n)
 
         # Undated photos sort last rather than to 1970, which is where a
         # missing EXIF timestamp used to put them.
@@ -190,6 +201,29 @@ class LibraryIndex:
             self.ocr_scanned[row] = True
             if text:
                 self.ocr_text[row] = str(text).lower()
+
+    def _load_annotations(self, n: int) -> None:
+        """Attach favorite/rating to image rows.
+
+        Annotations live as JSON records in ``catalog_records`` rather than on
+        the image row, so they are folded into plain arrays here once per
+        snapshot. That turns "favorites only" and "4 stars and up" from a
+        Python walk over every candidate into two NumPy mask operations.
+        """
+        self.favorites = np.zeros(n, dtype=bool)
+        self.ratings = np.zeros(n, dtype=np.int8)
+        try:
+            records = catalog.records(self._library, "annotation:")
+        except Exception as exc:  # pragma: no cover - missing/empty table
+            logger.debug("Annotations not loaded: %s", exc)
+            return
+        for key, value in records.items():
+            row = self._row_of_id.get(int(key))
+            if row is None:
+                continue
+            if value.get("favorite"):
+                self.favorites[row] = True
+            self.ratings[row] = int(value.get("rating") or 0)
 
     def text_match(self, tokens: Sequence[str],
                    allowed: Optional[np.ndarray] = None) -> np.ndarray:
@@ -295,6 +329,11 @@ class LibraryIndex:
                 tagged[rows] = True
             mask &= self.face_count > 0
             mask &= ~tagged
+
+        if filters.favorites_only:
+            mask &= self.favorites
+        if filters.min_rating > 0:
+            mask &= self.ratings >= int(filters.min_rating)
 
         if filters.camera:
             wanted = filters.camera.strip().lower()

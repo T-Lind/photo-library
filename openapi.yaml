@@ -1,4 +1,4 @@
-# Generated from the FastAPI application â€” do not edit by hand.
+# Generated from the FastAPI application — do not edit by hand.
 # Regenerate with:  python -m photolib.cli openapi > openapi.yaml
 openapi: 3.1.0
 info:
@@ -6,7 +6,7 @@ info:
   description: "\nA local, private photo library. Natural-language search over your photos,\nface search\
     \ and recognition, and date/location browsing \u2014 all running on your\nown machine with no network\
     \ calls.\n"
-  version: 2.0.0
+  version: 2.0.3
 paths:
   /api/v1/search:
     post:
@@ -81,6 +81,19 @@ paths:
           type: string
           default: relevance
           title: Sort
+      - name: mode
+        in: query
+        required: false
+        schema:
+          enum:
+          - both
+          - semantic
+          - text
+          type: string
+          description: both | semantic | text
+          default: both
+          title: Mode
+        description: both | semantic | text
       - name: people
         in: query
         required: false
@@ -109,7 +122,16 @@ paths:
       tags:
       - search
       summary: Search By Image
-      description: 'Reverse image search: find photos that look like the uploaded one.'
+      description: 'Reverse image search: find photos that look like the uploaded one.
+
+
+        ``filters`` optionally carries the same filter fields as /search (people,
+
+        dates, favorites, ...) as a JSON string, so a reverse search can be scoped
+
+        the way the user has the grid scoped rather than always searching the
+
+        whole library.'
       operationId: search_by_image_api_v1_search_by_image_post
       requestBody:
         content:
@@ -642,6 +664,39 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/HidePersonRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/people/{person_id}/cover:
+    post:
+      tags:
+      - people
+      summary: Set Cover
+      description: Pick which face is this person's profile picture.
+      operationId: set_cover_api_v1_people__person_id__cover_post
+      parameters:
+      - name: person_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Person Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoverFaceRequest'
       responses:
         '200':
           description: Successful Response
@@ -1897,6 +1952,12 @@ components:
           - type: integer
           - type: 'null'
           title: Per Page
+        filters:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Filters
+          description: JSON SearchRequest body to scope the search
       type: object
       required:
       - file
@@ -1911,6 +1972,16 @@ components:
       required:
       - file
       title: Body_search_faces_by_upload_api_v1_faces_search_by_upload_post
+    CoverFaceRequest:
+      properties:
+        face_id:
+          type: integer
+          title: Face Id
+          description: A face that belongs to this person
+      type: object
+      required:
+      - face_id
+      title: CoverFaceRequest
     DetachFacesRequest:
       properties:
         face_ids:
@@ -2271,6 +2342,16 @@ components:
           - type: 'null'
           title: Query
           description: Natural-language description
+        search_mode:
+          type: string
+          enum:
+          - both
+          - semantic
+          - text
+          title: Search Mode
+          description: '''both'' blends meaning and in-image text, ''semantic'' uses only meaning, ''text''
+            uses only text found in the photo'
+          default: both
         start_date:
           anyOf:
           - type: string
@@ -2358,6 +2439,12 @@ components:
           - random
           title: Sort
           default: relevance
+        seed:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Seed
         page:
           type: integer
           minimum: 1.0
@@ -2399,6 +2486,11 @@ components:
           type: boolean
           title: Scored
           default: false
+        seed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Seed
         results:
           items:
             $ref: '#/components/schemas/ImageSummary'

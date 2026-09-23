@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from ..config import get_settings
+from ..db import SchemaMismatch
 from ..service import NotFound, PhotoService
 
 _service: Optional[PhotoService] = None
@@ -33,6 +34,10 @@ def set_service(service: Optional[PhotoService]) -> None:
 def translate_errors(exc: Exception) -> HTTPException:
     if isinstance(exc, NotFound):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, SchemaMismatch):
+        # A configuration/catalog conflict, not a bad request or a server
+        # fault — surface the actionable message rather than a generic 500.
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (ValueError, KeyError)):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, FileNotFoundError):

@@ -9,8 +9,8 @@ from fastapi import APIRouter, Body, Depends, Query
 
 from ...service import PhotoService
 from ..deps import get_service, translate_errors
-from ..schemas import (HidePersonRequest, MergePeopleRequest, PersonOut,
-                       RenamePersonRequest)
+from ..schemas import (CoverFaceRequest, HidePersonRequest, MergePeopleRequest,
+                       PersonOut, RenamePersonRequest)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/people", tags=["people"])
@@ -73,6 +73,16 @@ def set_hidden(person_id: int, req: HidePersonRequest = Body(...),
     """Hide a person without deleting them — for strangers and false clusters."""
     try:
         return service.set_person_hidden(person_id, req.hidden)
+    except Exception as exc:
+        raise translate_errors(exc)
+
+
+@router.post("/{person_id}/cover", response_model=PersonOut)
+def set_cover(person_id: int, req: CoverFaceRequest = Body(...),
+              service: PhotoService = Depends(get_service)):
+    """Pick which face is this person's profile picture."""
+    try:
+        return service.set_person_cover(person_id, req.face_id)
     except Exception as exc:
         raise translate_errors(exc)
 

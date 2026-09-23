@@ -151,6 +151,70 @@ def test_subset_ranking_matches_exact_cosine(indexed_service):
     assert len(filtered_scores) == 2
 
 
+def test_random_sort_returns_a_reusable_seed(indexed_service):
+    first = indexed_service.search(None, Filters(), sort="random", page=1, per_page=4)
+    assert first.seed is not None
+
+    # Reusing the returned seed keeps a shuffle stable while paging.
+    again = indexed_service.search(None, Filters(), sort="random", page=1,
+                                   per_page=4, seed=first.seed)
+    assert [r["image_id"] for r in first.results] == \
+           [r["image_id"] for r in again.results]
+    # It is a shuffle, not a re-sort: same set, generally different order.
+    every = indexed_service.search(None, Filters(), sort="date_desc", per_page=50)
+    assert {r["image_id"] for r in first.results} <= \
+           {r["image_id"] for r in every.results}
+
+
+def test_annotation_filter_reflects_a_new_favorite_without_reindex(indexed_service):
+    target = indexed_service.search(None, Filters()).results[0]["image_id"]
+
+    indexed_service.annotate(target, favorite=True, rating=5)
+
+    favorites = indexed_service.search(None, Filters(favorites_only=True))
+    assert [r["image_id"] for r in favorites.results] == [target]
+    rated = indexed_service.search(None, Filters(min_rating=5))
+    assert target in [r["image_id"] for r in rated.results]
+
+
+def test_search_mode_semantic_skips_text_matching(indexed_service, monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("text search must not run in semantic mode")
+
+    monkeypatch.setattr(indexed_service, "_text_rows", boom)
+    page = indexed_service.search("beach sunset", Filters(), sort="relevance",
+                                  search_mode="semantic")
+
+    assert page.total > 0
+    assert all(not r.get("text_match") for r in page.results)
+
+
+def test_search_reports_a_clear_model_mismatch(indexed_service, monkeypatch):
+    import pytest as _pytest
+
+    from photolib.db import SchemaMismatch
+
+    class WrongEmbedder:
+        backend = "stub"
+        model_name = "some-other-model"
+        dim = 3
+
+        def embed_texts(self, texts):  # pragma: no cover - must not be reached
+            raise AssertionError("a mismatched model must not be used")
+
+    monkeypatch.setattr(indexed_service, "_embedder", WrongEmbedder())
+    with _pytest.raises(SchemaMismatch) as exc:
+        indexed_service.search("beach", Filters(), sort="relevance")
+    assert "indexed with" in str(exc.value)
+
+
+def test_unknown_search_mode_is_rejected(indexed_service):
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        indexed_service.search("beach", Filters(), search_mode="magic")
+
+
 def test_pagination_is_stable_and_non_overlapping(indexed_service):
     first = indexed_service.search(None, Filters(), sort="date_desc",
                                    page=1, per_page=3)

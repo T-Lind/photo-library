@@ -75,7 +75,7 @@ installer. It installs for the current user by default and supports a quiet
 install with an uppercase `/S`:
 
 ```powershell
-photolib_2.0.2_x64-setup.exe /S
+photolib_2.0.3_x64-setup.exe /S
 ```
 
 Windows needs the MSVC build tools and WebView2 (present on Windows 10 21H2

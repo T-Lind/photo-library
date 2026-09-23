@@ -350,8 +350,11 @@ def mutual_knn_components(embeddings: np.ndarray, k: int, threshold: float,
     the chaining failure that makes plain single-linkage (and DBSCAN with a
     loose eps) merge separate people through a few ambiguous faces.
 
-    Similarities are computed in blocks, so peak memory is
-    ``block x n x 4`` bytes rather than ``n^2 x 4``.
+    Similarities are computed in blocks, and the block size is chosen so the
+    ``(block x n)`` scratch stays near 64 MiB even at a few hundred thousand
+    faces. Mutual edges are found with vectorised set membership rather than
+    one Python set per face, which is what previously made a full pass on a
+    large library both slow and memory-hungry.
 
     Returns an array of cluster labels, one per row.
     """
@@ -362,6 +365,9 @@ def mutual_knn_components(embeddings: np.ndarray, k: int, threshold: float,
         return np.zeros(1, dtype=np.int32)
 
     k = min(k, n - 1)
+    # Keep one similarity block to ~64 MiB: n grows into the hundreds of
+    # thousands, a fixed 2048-row block would need gigabytes of scratch.
+    block = max(1, min(block, (64 << 20) // max(1, 4 * n)))
     neighbours = np.empty((n, k), dtype=np.int32)
     sims = np.empty((n, k), dtype=np.float32)
 
@@ -375,10 +381,28 @@ def mutual_knn_components(embeddings: np.ndarray, k: int, threshold: float,
         order = np.argsort(-vals, axis=1)
         neighbours[start:stop] = np.take_along_axis(idx, order, axis=1)
         sims[start:stop] = np.take_along_axis(vals, order, axis=1)
+        del chunk
 
-    neighbour_sets = [set(neighbours[i][sims[i] >= threshold].tolist()) for i in range(n)]
+    # Directed edges clearing the threshold, encoded as ``i * n + j`` so that
+    # mutuality is a vectorised membership test (both directions present).
+    src = np.repeat(np.arange(n, dtype=np.int64), k)
+    dst = neighbours.reshape(-1).astype(np.int64)
+    valid = sims.reshape(-1) >= threshold
+    src, dst = src[valid], dst[valid]
+    if src.size == 0:
+        # Nothing is similar enough; every face is its own cluster.
+        return np.arange(n, dtype=np.int32)
 
-    parent = np.arange(n, dtype=np.int32)
+    codes = src * n + dst
+    reverse = np.sort(dst * n + src)
+    pos = np.searchsorted(reverse, codes)
+    np.clip(pos, 0, reverse.size - 1, out=pos)
+    mutual = reverse[pos] == codes
+    a, b = src[mutual], dst[mutual]
+    keep = a < b                       # one direction per undirected pair
+    a, b = a[keep], b[keep]
+
+    parent = np.arange(n, dtype=np.int64)
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -386,14 +410,12 @@ def mutual_knn_components(embeddings: np.ndarray, k: int, threshold: float,
             x = int(parent[x])
         return x
 
-    for i in range(n):
-        for j in neighbour_sets[i]:
-            if i in neighbour_sets[j]:       # mutual
-                ri, rj = find(i), find(int(j))
-                if ri != rj:
-                    parent[rj] = ri
+    for x, y in zip(a.tolist(), b.tolist()):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[ry] = rx
 
-    roots = np.array([find(i) for i in range(n)], dtype=np.int32)
+    roots = np.array([find(i) for i in range(n)], dtype=np.int64)
     _, labels = np.unique(roots, return_inverse=True)
     return labels.astype(np.int32)
 

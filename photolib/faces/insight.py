@@ -84,6 +84,11 @@ class InsightFaceBackend(FaceBackend):
                 # heads roughly double per-image cost and nothing here uses them.
                 allowed_modules=["detection", "recognition"],
                 providers=_providers(self.device),
+                # Carries ``root`` when a self-contained model directory was
+                # configured; without it FaceAnalysis falls back to
+                # ~/.insightface and re-downloads weights the packaged app
+                # already shipped offline.
+                **kwargs,
             )
             app.prepare(ctx_id=0, det_size=(self.det_size, self.det_size))
             self._app = app

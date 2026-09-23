@@ -69,6 +69,57 @@ def test_mutual_knn_handles_trivial_inputs():
     assert mutual_knn_components(np.ones((1, 8), dtype=np.float32), 5, 0.5).tolist() == [0]
 
 
+def _reference_components(embeddings, k, threshold):
+    """Straightforward, slow mutual-kNN, to pin the vectorised rewrite."""
+    n = embeddings.shape[0]
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    if n == 1:
+        return np.zeros(1, dtype=np.int32)
+    k = min(k, n - 1)
+    sims = embeddings @ embeddings.T
+    np.fill_diagonal(sims, -np.inf)
+    neighbours = np.argsort(-sims, axis=1)[:, :k]
+    sets = [set(neighbours[i][sims[i][neighbours[i]] >= threshold].tolist())
+            for i in range(n)]
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in sets[i]:
+            if i in sets[j]:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[rj] = ri
+    roots = np.array([find(i) for i in range(n)])
+    _, labels = np.unique(roots, return_inverse=True)
+    return labels.astype(np.int32)
+
+
+def test_vectorised_mutual_knn_matches_reference():
+    rng = np.random.default_rng(7)
+    for _ in range(25):
+        clusters = int(rng.integers(2, 6))
+        n = int(rng.integers(3, 40))
+        centres = rng.normal(size=(clusters, 24)).astype(np.float32)
+        centres /= np.linalg.norm(centres, axis=1, keepdims=True)
+        points = centres[rng.integers(0, clusters, size=n)] \
+            + rng.normal(scale=0.3, size=(n, 24)).astype(np.float32)
+        points /= np.linalg.norm(points, axis=1, keepdims=True)
+        k = int(rng.integers(2, 7))
+        threshold = float(rng.uniform(0.2, 0.7))
+
+        got = mutual_knn_components(points, k, threshold)
+        expected = _reference_components(points, k, threshold)
+        assert all((got[i] == got[j]) == (expected[i] == expected[j])
+                   for i in range(n) for j in range(i + 1, n))
+
+
 def test_quality_score_prefers_large_sharp_faces():
     rng = np.random.default_rng(0)
     sharp = rng.integers(0, 255, (200, 200, 3), dtype=np.uint8)
@@ -280,6 +331,28 @@ def test_deleting_a_person_frees_their_faces(indexed_service):
     assert len(indexed_service.list_people()) == 3
     unassigned = indexed_service.library.faces.count_rows(f"person_id = {UNASSIGNED}")
     assert unassigned > 0
+
+
+def test_person_cover_can_be_chosen_and_survives_recompute(indexed_service):
+    person = next(p for p in indexed_service.list_people() if p["photo_count"] >= 2)
+    faces = indexed_service.person_faces(person["person_id"], limit=200)
+    target = next(f["face_id"] for f in faces
+                  if f["face_id"] != person["cover_face_id"])
+
+    updated = indexed_service.set_person_cover(person["person_id"], target)
+    assert updated["cover_face_id"] == target
+
+    # A later centroid recompute must not silently reset the profile picture.
+    indexed_service._recompute_person(person["person_id"])
+    assert indexed_service.get_person(person["person_id"])["cover_face_id"] == target
+
+
+def test_person_cover_rejects_a_face_from_another_person(indexed_service):
+    first, second = indexed_service.list_people()[:2]
+    foreign = indexed_service.person_faces(second["person_id"], limit=1)[0]["face_id"]
+
+    with pytest.raises(ValueError):
+        indexed_service.set_person_cover(first["person_id"], foreign)
 
 
 def test_recluster_preserves_confirmed_identities(indexed_service):

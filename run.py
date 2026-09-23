@@ -6,13 +6,29 @@ Equivalent to ``python -m photolib.cli serve --reload``.
 from __future__ import annotations
 
 import logging
+import sys
 
 import uvicorn
 
 from photolib.config import get_settings
 
 
+def _force_utf8_console() -> None:
+    """Keep the startup banner from crashing when stdout is redirected.
+
+    A piped or captured stdout defaults to the locale encoding (cp1252 on
+    Windows), which cannot encode the arrow in the banner and raises
+    ``UnicodeEncodeError`` before uvicorn ever starts.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> None:
+    _force_utf8_console()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",

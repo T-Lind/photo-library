@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from ...browse import Filters
 from ...service import PhotoService
 from ..deps import get_service, translate_errors
-from ..schemas import SearchRequest, SearchResponse
+from ..schemas import SearchMode, SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
@@ -36,6 +36,8 @@ def _filters(req: SearchRequest) -> Filters:
         near_lon=req.near_lon,
         near_km=req.near_km,
         media=req.media,
+        favorites_only=req.favorites_only,
+        min_rating=req.min_rating,
     )
 
 
@@ -49,8 +51,8 @@ def search(req: SearchRequest, service: PhotoService = Depends(get_service)):
     try:
         page = service.search(req.query, _filters(req), sort=req.sort,
                               page=req.page, per_page=req.per_page,
-                              min_score=req.min_score, favorites_only=req.favorites_only,
-                              min_rating=req.min_rating)
+                              min_score=req.min_score, seed=req.seed,
+                              search_mode=req.search_mode)
     except Exception as exc:
         logger.exception("Search failed")
         raise translate_errors(exc)
@@ -63,13 +65,15 @@ def search_get(
     page: int = Query(1, ge=1),
     per_page: Optional[int] = Query(None, ge=1, le=1000),
     sort: str = Query("relevance"),
+    mode: SearchMode = Query("both", description="both | semantic | text"),
     people: Optional[str] = Query(None, description="Comma-separated person ids"),
     service: PhotoService = Depends(get_service),
 ):
     """GET form of /search, so a search is a shareable, bookmarkable URL."""
     people_ids = [int(p) for p in people.split(",") if p.strip()] if people else []
     req = SearchRequest(query=q, page=page, per_page=per_page,
-                        sort=sort, people_ids=people_ids)  # type: ignore[arg-type]
+                        sort=sort, people_ids=people_ids,
+                        search_mode=mode)  # type: ignore[arg-type]
     return search(req, service)
 
 
@@ -78,9 +82,17 @@ async def search_by_image(
     file: UploadFile = File(...),
     page: int = Form(1),
     per_page: Optional[int] = Form(None),
+    filters: Optional[str] = Form(
+        None, description="JSON SearchRequest body to scope the search"),
     service: PhotoService = Depends(get_service),
 ):
-    """Reverse image search: find photos that look like the uploaded one."""
+    """Reverse image search: find photos that look like the uploaded one.
+
+    ``filters`` optionally carries the same filter fields as /search (people,
+    dates, favorites, ...) as a JSON string, so a reverse search can be scoped
+    the way the user has the grid scoped rather than always searching the
+    whole library.
+    """
     tmp_dir = Path(tempfile.mkdtemp(prefix="photolib-upload-"))
     tmp_path = tmp_dir / (Path(file.filename or "upload").name or "upload")
     try:
@@ -92,7 +104,17 @@ async def search_by_image(
                     raise HTTPException(status_code=413, detail="Upload too large")
                 out.write(chunk)
 
-        result = service.search_by_image(tmp_path, Filters(), page=page,
+        scoped = Filters()
+        if filters:
+            import json
+
+            try:
+                scoped = _filters(SearchRequest.model_validate(json.loads(filters)))
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(status_code=400,
+                                    detail=f"Invalid filters: {exc}")
+
+        result = service.search_by_image(tmp_path, scoped, page=page,
                                          per_page=per_page)
         return SearchResponse(**result.__dict__)
     except HTTPException:

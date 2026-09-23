@@ -18,7 +18,8 @@ import numpy as np
 
 from .browse import Filters, LibraryIndex
 from .config import Settings, get_settings
-from .db import (FACES, IMAGES, IMAGE_LIST_COLUMNS, Library, UNASSIGNED, now_ms)
+from .db import (FACES, IMAGES, IMAGE_LIST_COLUMNS, Library, SchemaMismatch,
+                 UNASSIGNED, now_ms)
 from .embeddings import Embedder, build_embedder
 from .faces import FaceBackend, build_face_backend
 from .faces.cluster import recluster, suggest_for_person
@@ -67,6 +68,8 @@ class SearchPage:
     took_ms: float = 0.0
     # Present when the query was semantic; lets the UI show a relevance bar.
     scored: bool = False
+    # Echoed for a "random" sort so the client can page a stable shuffle.
+    seed: Optional[int] = None
 
 
 class PhotoService(LibraryFeatures):
@@ -125,48 +128,82 @@ class PhotoService(LibraryFeatures):
     # ------------------------------------------------------------------
     def search(self, query: Optional[str], filters: Filters, sort: str = "date_desc",
                page: int = 1, per_page: Optional[int] = None,
-               min_score: Optional[float] = None, favorites_only: bool = False,
-               min_rating: int = 0) -> SearchPage:
+               min_score: Optional[float] = None,
+               seed: Optional[int] = None,
+               search_mode: str = "both") -> SearchPage:
+        """Rank the library against ``query``.
+
+        ``search_mode`` chooses which signals the query uses:
+        ``"both"`` blends semantic similarity with exact OCR text matches,
+        ``"semantic"`` uses only the embedding model (no text), and
+        ``"text"`` uses only text found inside images (no embedding model is
+        loaded at all).
+        """
         import time
 
         started = time.perf_counter()
         self.require_ready()
         per_page = min(per_page or self.settings.default_page_size,
                        self.settings.max_page_size)
+        if search_mode not in ("both", "semantic", "text"):
+            raise ValueError(f"Unknown search_mode {search_mode!r}")
 
+        # Favorites/rating are resolved by the columnar browse index, so this
+        # is two vectorised masks rather than a per-row Python dictionary walk.
         allowed = self.index.select(filters)
-        if favorites_only or min_rating:
-            annotations = self.annotations()
-            allowed = np.asarray([r for r in allowed if
-                (not favorites_only or annotations.get(int(self.index.image_ids[r]), {}).get("favorite", False))
-                and annotations.get(int(self.index.image_ids[r]), {}).get("rating", 0) >= min_rating], dtype=np.int64)
         has_query = bool(query and query.strip())
+        if sort == "random" and seed is None:
+            # A fresh seed per request means "random" actually reshuffles,
+            # while the returned seed lets the client keep one order stable
+            # as it pages through the results.
+            seed = int.from_bytes(os.urandom(4), "little")
 
-        score_of: Dict[int, float] = {}
+        want_semantic = has_query and search_mode != "text"
+        want_text = has_query and search_mode != "semantic"
+
+        sem_rows = np.zeros(0, dtype=np.int64)
+        sem_scores = np.zeros(0, dtype=np.float32)
+        text_rows = np.zeros(0, dtype=np.int64)
         text_set: set = set()
-        if has_query:
+        score_of: Dict[int, float] = {}
+        if want_semantic:
             sem_rows, sem_scores = self._semantic_rows(
                 query.strip(), allowed, min_score)
+        if want_text:
             # Exact text hits (from OCR) are the strongest possible signal for
             # a literal query like "JROTC": the embedding model cannot read
             # fine print, so text matches rank ahead of semantic ones.
             text_rows = self._text_rows(query.strip(), allowed)
             text_set = {int(r) for r in text_rows}
-            if sort in ("relevance", "quality"):
+
+        if has_query:
+            ranked = sort in ("relevance", "quality")
+            if want_semantic:
                 score_of = {int(r): float(s)
                             for r, s in zip(sem_rows, sem_scores)}
-                rest = (sem_rows[~np.isin(sem_rows, text_rows)]
-                        if text_rows.size else sem_rows)
-                ordered = np.concatenate([
-                    self.index.order(text_rows, "date_desc"), rest,
-                ]).astype(np.int64)
+            if want_semantic and want_text:
+                if ranked:
+                    rest = (sem_rows[~np.isin(sem_rows, text_rows)]
+                            if text_rows.size else sem_rows)
+                    ordered = np.concatenate([
+                        self.index.order(text_rows, "date_desc"), rest,
+                    ]).astype(np.int64)
+                else:
+                    union = np.union1d(sem_rows, text_rows).astype(np.int64)
+                    ordered = self.index.order(union, sort, seed=seed)
+            elif want_semantic:
+                # Text hits are excluded entirely; semantic score is the order.
+                ordered = (sem_rows.astype(np.int64) if ranked
+                           else self.index.order(sem_rows, sort, seed=seed))
             else:
-                union = np.union1d(sem_rows, text_rows).astype(np.int64)
-                ordered = self.index.order(union, sort)
+                # Text only: there is no cosine relevance, so fall back to date.
+                ordered = (self.index.order(text_rows, "date_desc") if ranked
+                           else self.index.order(text_rows, sort, seed=seed))
         else:
             # "relevance" has no meaning without a query.
             ordered = self.index.order(
-                allowed, "date_desc" if sort == "relevance" else sort)
+                allowed, "date_desc" if sort == "relevance" else sort,
+                seed=seed)
 
         quality_details = {}
         if sort == "quality":
@@ -190,12 +227,28 @@ class PhotoService(LibraryFeatures):
         return SearchPage(
             total=total, page=page, per_page=per_page, results=results,
             took_ms=round((time.perf_counter() - started) * 1000, 2),
-            scored=has_query)
+            scored=has_query, seed=seed)
+
+    def _check_embedder(self) -> None:
+        """Fail with a clear message when the configured model is not the one
+        that built the library, instead of a raw ANN dimension error."""
+        meta = self.library.read_meta()
+        if meta is None:
+            return
+        if (self.embedder.dim != meta.image_dim
+                or self.embedder.model_name != meta.embed_model):
+            raise SchemaMismatch(
+                f"This library was indexed with {meta.embed_backend}:"
+                f"{meta.embed_model} ({meta.image_dim}d), but the configured "
+                f"embedder is {self.embedder.backend}:{self.embedder.model_name} "
+                f"({self.embedder.dim}d). Unset PHOTO_EMBED_BACKEND/PHOTO_EMBED_MODEL "
+                "or re-index with --rebuild.")
 
     def _semantic_rows(self, query: str, allowed: np.ndarray,
                        min_score: Optional[float]) -> Tuple[np.ndarray, np.ndarray]:
         if allowed.size == 0:
             return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float32)
+        self._check_embedder()
         vector = self.embedder.embed_texts([query])[0]
         return self._vector_rows(vector, allowed, min_score)
 
@@ -314,6 +367,7 @@ class PhotoService(LibraryFeatures):
         per_page = min(per_page or self.settings.default_page_size,
                        self.settings.max_page_size)
 
+        self._check_embedder()
         vector = self.embedder.embed_images([str(image_path)])[0]
         allowed = self.index.select(filters)
         rows, scores = self._vector_rows(vector, allowed)
@@ -533,6 +587,23 @@ class PhotoService(LibraryFeatures):
         self.get_person(person_id)
         self.library.people.update(where=f"person_id = {int(person_id)}",
                                    values={"hidden": bool(hidden)})
+        self._people_cache = None
+        return self.get_person(person_id)
+
+    @catalog.serialized
+    def set_person_cover(self, person_id: int, face_id: int) -> dict:
+        """Choose the face that represents a person (their profile picture).
+
+        Only a face that actually belongs to the person may be used. The
+        choice is preserved by later centroid recomputes as long as the face
+        stays with the person.
+        """
+        self.get_person(person_id)
+        face = self.get_face(face_id)
+        if face["person_id"] != int(person_id):
+            raise ValueError("That face does not belong to this person")
+        self.library.people.update(where=f"person_id = {int(person_id)}",
+                                   values={"cover_face_id": int(face_id)})
         self._people_cache = None
         return self.get_person(person_id)
 
@@ -872,6 +943,21 @@ class PhotoService(LibraryFeatures):
         centroid = (vectors * weights[:, None]).sum(axis=0) / weights.sum()
         centroid /= max(float(np.linalg.norm(centroid)), 1e-12)
         cover = int(rows[int(np.argmax(weights))]["face_id"])
+
+        # Keep a manually chosen cover (or a cover already in place) as long
+        # as that face is still one of this person's faces. Without this, any
+        # recompute would silently reset the user's profile picture.
+        try:
+            current = (
+                self.library.people.search()
+                .where(f"person_id = {int(person_id)}")
+                .select(["cover_face_id"]).limit(1).to_arrow().to_pylist())
+        except Exception:
+            current = []
+        if current and current[0]["cover_face_id"] is not None:
+            chosen = int(current[0]["cover_face_id"])
+            if chosen >= 0 and any(int(r["face_id"]) == chosen for r in rows):
+                cover = chosen
 
         self.library.people.update(
             where=f"person_id = {int(person_id)}",

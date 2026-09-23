@@ -49,7 +49,7 @@ Download the current **Windows x64 setup** from the
 Nothing else is required: no Python, Node.js, account, or API key.
 
 1. Close Photolib if an older copy is running.
-2. Run the downloaded `photolib_2.0.2_x64-setup.exe`.
+2. Run the downloaded `photolib_2.0.3_x64-setup.exe`.
 3. Open **photolib** from the Start menu and choose a photo folder.
 
 The app leaves your library data alone during upgrades. The installer is not

@@ -6,6 +6,7 @@ us roll back an interrupted multi-table edit when the catalog next opens.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import functools
 from contextlib import contextmanager
@@ -13,8 +14,35 @@ from pathlib import Path
 
 import pyarrow as pa
 
+logger = logging.getLogger(__name__)
+
 RECORDS = "catalog_records"
 RECORD_SCHEMA = pa.schema([("key", pa.string()), ("value", pa.string())])
+
+# Catalogs whose key index we have already ensured in this process. Creating a
+# scalar index is not free, so it happens at most once per process per catalog
+# rather than on every annotation read.
+_INDEXED: set = set()
+
+
+def ensure_index(library) -> None:
+    """Make ``catalog_records.key`` an indexed lookup, not a table scan.
+
+    Every search page resolves its results' favorite/rating annotations by
+    key. On a library with tens of thousands of annotations that is a full
+    scan per page without this index.
+    """
+    if RECORDS not in library.table_names():
+        return
+    uri = str(library.uri)
+    if uri in _INDEXED:
+        return
+    _INDEXED.add(uri)
+    try:
+        library.table(RECORDS).create_scalar_index(
+            "key", replace=True, index_type="BTREE")
+    except Exception as exc:  # pragma: no cover - version dependent
+        logger.debug("catalog_records key index skipped: %s", exc)
 
 
 def path_key(path):
@@ -28,6 +56,7 @@ def literal(value):
 def records(library, prefix):
     if RECORDS not in library.table_names():
         return {}
+    ensure_index(library)
     table = library.table(RECORDS).to_lance().to_table(
         columns=["key", "value"], filter=f"starts_with(key, {literal(prefix)})")
     return {r["key"][len(prefix):]: json.loads(r["value"])
@@ -37,6 +66,7 @@ def records(library, prefix):
 def get(library, key, default=None):
     if RECORDS not in library.table_names():
         return default
+    ensure_index(library)
     rows = library.table(RECORDS).to_lance().to_table(
         columns=["value"], filter=f"key = {literal(key)}").to_pylist()
     return json.loads(rows[0]["value"]) if rows else default
@@ -46,6 +76,7 @@ def selected(library, keys):
     keys = list(keys)
     if not keys or RECORDS not in library.table_names():
         return {}
+    ensure_index(library)
     predicate = ",".join(literal(k) for k in keys)
     rows = library.table(RECORDS).to_lance().to_table(
         columns=["key", "value"], filter=f"key IN ({predicate})").to_pylist()
@@ -56,6 +87,7 @@ def put(library, key, value):
     with library._lock:
         if RECORDS not in library.table_names():
             library.db.create_table(RECORDS, schema=RECORD_SCHEMA)
+        ensure_index(library)
         data = pa.Table.from_pylist([{"key": key, "value": json.dumps(value, allow_nan=False)}],
                                     schema=RECORD_SCHEMA)
         library.table(RECORDS).merge_insert("key").when_matched_update_all().when_not_matched_insert_all().execute(data)

@@ -77,6 +77,11 @@
               <span class="search-icon" aria-hidden="true">⌕</span>
               <input id="searchInput" class="field" type="search" placeholder="Describe a photo — or leave empty and browse with filters" aria-label="Search photos">
             </div>
+            <select id="searchMode" class="select slim" aria-label="How to match the query" title="Match by meaning, by text inside the photo, or both">
+              <option value="both">Meaning + text</option>
+              <option value="semantic">Meaning only</option>
+              <option value="text">Text only</option>
+            </select>
             <button class="btn primary" type="submit">Search</button>
           </form>
 

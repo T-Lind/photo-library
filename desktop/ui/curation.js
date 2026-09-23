@@ -2,8 +2,8 @@
 let savedSearchItems = [];
 
 function initCuration() {
-  $("favoritesOnly").addEventListener("change", () => search(1));
-  $("minRating").addEventListener("change", () => search(1));
+  $("favoritesOnly").addEventListener("change", filterChanged);
+  $("minRating").addEventListener("change", filterChanged);
   $("saveSearchForm").addEventListener("submit", async event => {
     event.preventDefault();
     try {
@@ -50,8 +50,16 @@ function applySavedSearch() {
   $("favoritesOnly").checked = r.favorites_only;
   $("minRating").value = String(r.min_rating);
   $("sortSelect").value = r.sort;
-  state.selectedPeople = r.people_ids;
-  state.peopleMode = r.people_mode;
+  $("searchMode").value = r.search_mode || "both";
+  syncSearchModeUi();
+  // Copy, don't alias: the picker mutates this array, which would silently
+  // edit the saved search in memory.
+  state.selectedPeople = [...(r.people_ids || [])];
+  state.peopleMode = r.people_mode || "any";
+  // Keep the visible all/any radio in step with the restored mode.
+  const modeRadio = document.querySelector(
+    `input[name="peopleMode"][value="${state.peopleMode}"]`);
+  if (modeRadio) modeRadio.checked = true;
   state.untaggedOnly = r.untagged_only;
   state.near = r.near_lat == null ? null : {lat:r.near_lat, lon:r.near_lon, km:r.near_km};
   state.savedFilterExtras = {folder:r.folder, has_faces:r.has_faces};

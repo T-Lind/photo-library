@@ -131,6 +131,51 @@ def test_full_text_is_retrievable_for_copying(ocr_indexed):
         ocr_indexed.ocr_text(987654)
 
 
+def test_text_only_mode_skips_the_embedding_model(ocr_indexed, monkeypatch):
+    from photolib.browse import Filters
+
+    def boom(*args, **kwargs):
+        raise AssertionError("the embedding model must not run in text mode")
+
+    monkeypatch.setattr(ocr_indexed, "_semantic_rows", boom)
+    page = ocr_indexed.search("beach", Filters(), sort="date_desc",
+                              search_mode="text")
+
+    assert page.total > 0
+    assert all(r.get("text_match") for r in page.results)
+
+
+def test_semantic_only_mode_ignores_text(ocr_indexed, monkeypatch):
+    from photolib.browse import Filters
+
+    def boom(*args, **kwargs):
+        raise AssertionError("text matching must not run in semantic mode")
+
+    monkeypatch.setattr(ocr_indexed, "_text_rows", boom)
+    page = ocr_indexed.search("beach sunset", Filters(), sort="relevance",
+                              search_mode="semantic")
+
+    assert page.total > 0
+    assert all(not r.get("text_match") for r in page.results)
+
+
+def test_search_mode_survives_the_http_layer(ocr_indexed):
+    from fastapi.testclient import TestClient
+
+    from photolib.api.app import create_app
+    from photolib.api.deps import set_service
+
+    set_service(ocr_indexed)
+    try:
+        with TestClient(create_app(ocr_indexed.settings)) as client:
+            body = client.post("/api/v1/search", json={
+                "query": "beach", "search_mode": "text"}).json()
+    finally:
+        set_service(None)
+    assert body["total"] > 0
+    assert all(r.get("text_match") for r in body["results"])
+
+
 def test_full_text_is_empty_without_ocr(indexed_service):
     """A library that has never been scanned answers with empty text."""
     from photolib.browse import Filters

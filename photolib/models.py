@@ -70,6 +70,9 @@ FACE_MODELS: Dict[str, ModelSpec] = {
         url=f"{INSIGHTFACE_BASE}/buffalo_l.zip",
         members=["det_10g.onnx", "w600k_r50.onnx"],
         approx_bytes=288_000_000,
+        # Pinned so a corrupted download or a changed release is rejected
+        # rather than silently trusted. Matches the v0.7 release asset.
+        sha256="80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
         licence="InsightFace model licence — non-commercial research use",
     ),
     "buffalo_s": ModelSpec(

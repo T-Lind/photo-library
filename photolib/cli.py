@@ -52,6 +52,13 @@ def cmd_index(args) -> int:
     if bar["pbar"]:
         bar["pbar"].close()
 
+    # Remember the folder the way the API/desktop indexing path does, so the
+    # Library tab and "rescan all" know about a library built from the CLI.
+    try:
+        PhotoService(settings, library).add_root(str(args.folder))
+    except Exception as exc:  # remembering the root must never fail the run
+        logging.getLogger(__name__).debug("Could not record root: %s", exc)
+
     print(json.dumps(stats.as_dict(), indent=2))
     return 0
 

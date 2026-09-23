@@ -367,12 +367,20 @@ class Library:
 
             # Scalar indexes make the hot filters (person membership,
             # per-image face lookup, path dedupe) index scans, not table scans.
-            for table_name, column, kind in (
+            indexes = [
                 (FACES, "person_id", "BTREE"),
                 (FACES, "image_id", "BTREE"),
                 (IMAGES, "image_id", "BTREE"),
                 (IMAGES, "path", "BTREE"),
-            ):
+            ]
+            # `catalog_records` holds one JSON row per annotation, saved search,
+            # failure, etc. Every search page reads annotations by key, so
+            # without an index each hydrate is a full table scan.
+            from .catalog import RECORDS
+            if RECORDS in self.table_names():
+                indexes.append((RECORDS, "key", "BTREE"))
+
+            for table_name, column, kind in indexes:
                 try:
                     self._db.open_table(table_name).create_scalar_index(
                         column, replace=True, index_type=kind)

@@ -1,6 +1,6 @@
 [package]
 name = "photolib-desktop"
-version = "2.0.2"
+version = "2.0.3"
 description = "A local, private photo library"
 edition = "2021"
 rust-version = "1.77"

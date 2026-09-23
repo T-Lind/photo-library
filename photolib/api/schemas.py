@@ -9,12 +9,18 @@ from pydantic import BaseModel, Field, field_validator
 
 SortOption = Literal["relevance", "quality", "date_desc", "date_asc", "added_desc", "random"]
 PeopleMode = Literal["any", "all"]
+# Which signals a text query uses: the embedding model, exact OCR text, or both.
+SearchMode = Literal["both", "semantic", "text"]
 
 
 class SearchRequest(BaseModel):
     favorites_only: bool = False
     min_rating: int = Field(0, ge=0, le=5)
     query: Optional[str] = Field(None, description="Natural-language description")
+    search_mode: SearchMode = Field(
+        "both",
+        description="'both' blends meaning and in-image text, 'semantic' uses "
+                    "only meaning, 'text' uses only text found in the photo")
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     people_ids: List[int] = Field(default_factory=list)
@@ -29,6 +35,8 @@ class SearchRequest(BaseModel):
     near_km: float = Field(1.0, gt=0, le=20000)
     media: Optional[Literal["image", "video"]] = None
     sort: SortOption = "relevance"
+    # Stable-shuffle seed for sort="random"; omit to reshuffle each request.
+    seed: Optional[int] = Field(None, ge=0)
     page: int = Field(1, ge=1)
     per_page: Optional[int] = Field(None, ge=1, le=1000)
     min_score: Optional[float] = Field(
@@ -71,6 +79,7 @@ class SearchResponse(BaseModel):
     per_page: int
     took_ms: float = 0.0
     scored: bool = False
+    seed: Optional[int] = None
     results: List[ImageSummary]
 
 
@@ -100,6 +109,10 @@ class RenamePersonRequest(BaseModel):
 
 class HidePersonRequest(BaseModel):
     hidden: bool = True
+
+
+class CoverFaceRequest(BaseModel):
+    face_id: int = Field(..., description="A face that belongs to this person")
 
 
 class MergePeopleRequest(BaseModel):

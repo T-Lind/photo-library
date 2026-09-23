@@ -35,6 +35,8 @@ const state = {
   imageQuery: null,       // {url, label, blob} — active search-by-image chip
   savedFilterExtras: {},  // filters restored from a saved search without a dedicated control
   modalTrashArmed: false, // Delete pressed once in the viewer, awaiting confirm
+  searchSeq: 0,           // guards against an out-of-order search response winning
+  randomSeed: null,       // stable shuffle seed, reused while paging a "Shuffle"
 };
 
 const RECENT_KEY = "photolib.recentSearches";
@@ -433,6 +435,7 @@ function renderPeopleOptions(filterText) {
       const at = state.selectedPeople.indexOf(id);
       if (at >= 0) state.selectedPeople.splice(at, 1);
       else state.selectedPeople.push(id);
+      state.savedFilterExtras = {};
       renderPeopleOptions($("peopleSearch").value);
       renderSelectedPeople();
       search(1, { keepPanel: true });
@@ -511,6 +514,7 @@ function currentFilters() {
     start_date: from ? `${from}T00:00:00` : null,
     favorites_only: $("favoritesOnly").checked,
     min_rating: Number($("minRating").value),
+    search_mode: $("searchMode").value,
     end_date: to ? `${to}T23:59:59` : null,
     people_ids: state.selectedPeople,
     people_mode: state.selectedPeople.length > 1 ? state.peopleMode : "any",
@@ -524,11 +528,29 @@ function currentFilters() {
   };
 }
 
+// A manual filter change invalidates any hidden filters (folder/has_faces)
+// carried over from a saved search; otherwise results stay mysteriously scoped.
+function filterChanged() {
+  state.savedFilterExtras = {};
+  search(1);
+}
+
+// Text-only matching reads differently from describing a scene, so the prompt
+// follows the selected mode.
+function syncSearchModeUi() {
+  const textOnly = $("searchMode").value === "text";
+  $("searchInput").placeholder = textOnly
+    ? "Words to find inside a photo — a name, a code, a title"
+    : "Describe a photo — or leave empty and browse with filters";
+}
+
 function clearFilters() {
   $("favoritesOnly").checked = false;
   $("minRating").value = "0";
   state.savedFilterExtras = {};
   $("searchInput").value = "";
+  $("searchMode").value = "both";
+  syncSearchModeUi();
   $("dateFrom").value = "";
   $("dateTo").value = "";
   $("cameraFilter").value = "";
@@ -547,12 +569,25 @@ function clearFilters() {
 async function search(page = 1, { keepPanel = false } = {}) {
   clearError();
   if (!keepPanel) togglePeoplePanel(false);
+  // A newer search supersedes this one; if it finishes first, this response
+  // must not overwrite the grid with stale results.
+  const seq = ++state.searchSeq;
   state.page = page;
   state.similarTo = null;
   clearImageQuery();
   $("similarBanner").classList.add("hidden");
   $("photoGrid").innerHTML = skeletonGrid();
   const query = $("searchInput").value.trim();
+  const sort = $("sortSelect").value;
+  if (sort === "random") {
+    // One seed per shuffle session so pages stay consistent; picking
+    // "Shuffle" again (page 1) draws a fresh order.
+    if (page === 1 || state.randomSeed == null) {
+      state.randomSeed = Math.floor(Math.random() * 2 ** 31);
+    }
+  } else {
+    state.randomSeed = null;
+  }
   startLoad();
   try {
     const result = await request("/search", {
@@ -561,11 +596,13 @@ async function search(page = 1, { keepPanel = false } = {}) {
         query: query || null,
         ...currentFilters(),
         ...state.savedFilterExtras,
-        sort: $("sortSelect").value,
+        sort,
+        seed: sort === "random" ? state.randomSeed : null,
         page,
         per_page: state.perPage,
       }),
     });
+    if (seq !== state.searchSeq) return;
     state.total = result.total;
     rememberSearch(query);
     renderPhotos(result);
@@ -573,6 +610,7 @@ async function search(page = 1, { keepPanel = false } = {}) {
     $("resultCount").textContent =
       `${result.total.toLocaleString()} ${result.total === 1 ? "PHOTO" : "PHOTOS"}${took}`;
   } catch (error) {
+    if (seq !== state.searchSeq) return;
     $("photoGrid").innerHTML = "";
     showError(`Search failed: ${error.message}`);
   } finally {
@@ -583,10 +621,12 @@ async function search(page = 1, { keepPanel = false } = {}) {
 async function showSimilar(imageId, filename) {
   clearError();
   setView("photos");
+  const seq = ++state.searchSeq;
   $("photoGrid").innerHTML = skeletonGrid();
   startLoad();
   try {
     const body = await request(`/images/${imageId}/similar?limit=48`);
+    if (seq !== state.searchSeq) return;
     state.similarTo = { image_id: imageId, filename };
     setImageQuery({
       url: `${API}/images/${imageId}/thumbnail?size=grid&format=webp`,
@@ -610,7 +650,19 @@ function browsePerson(personId) {
   setView("photos");
   closePerson();
   closePhoto();
+  // Show this person's whole library, not whatever filters were left over —
+  // a stale date or favorites filter otherwise makes them look missing.
   $("searchInput").value = "";
+  $("dateFrom").value = "";
+  $("dateTo").value = "";
+  $("cameraFilter").value = "";
+  $("mediaFilter").value = "";
+  $("locationToggle").checked = false;
+  $("favoritesOnly").checked = false;
+  $("minRating").value = "0";
+  state.untaggedOnly = false;
+  state.near = null;
+  state.savedFilterExtras = {};
   state.selectedPeople = [Number(personId)];
   renderSelectedPeople();
   $("sortSelect").value = "date_desc";
@@ -769,6 +821,14 @@ async function batchRemoveFromAlbum() {
   }
 }
 
+// The API caps a single trash/export call at 500 ids; a selection can span
+// several pages, so split it rather than letting the whole request 422.
+function chunkIds(ids, size = 500) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
 async function batchTrash() {
   const ids = [...state.selection];
   if (!ids.length) return;
@@ -781,12 +841,16 @@ async function batchTrash() {
   button.disabled = true;
   startLoad();
   try {
-    const body = await request("/images/trash", {
-      method: "POST",
-      body: JSON.stringify({ image_ids: ids }),
-    });
-    if (body.failed?.length) {
-      showError(`${body.failed.length} photo(s) could not be trashed — they stay in the library.`);
+    let failed = 0;
+    for (const chunk of chunkIds(ids)) {
+      const body = await request("/images/trash", {
+        method: "POST",
+        body: JSON.stringify({ image_ids: chunk }),
+      });
+      failed += body.failed?.length || 0;
+    }
+    if (failed) {
+      showError(`${failed} photo(s) could not be trashed — they stay in the library.`);
     }
     const fromAlbum = state.selectionScope === "album" && state.currentAlbum;
     clearSelection();
@@ -810,14 +874,20 @@ async function batchExport() {
   button.disabled = true;
   startLoad();
   try {
-    const body = await request("/images/export", {
-      method: "POST",
-      body: JSON.stringify({ image_ids: ids, folder }),
-    });
-    button.textContent = `Copied ${body.copied} ✓`;
-    if (body.missing || body.failed?.length) {
-      showError(`${body.copied} copied — but ${body.missing || 0} original(s) are missing` +
-        `${body.failed?.length ? ` and ${body.failed.length} failed` : ""}.`);
+    let copied = 0, missing = 0, failed = 0;
+    for (const chunk of chunkIds(ids)) {
+      const body = await request("/images/export", {
+        method: "POST",
+        body: JSON.stringify({ image_ids: chunk, folder }),
+      });
+      copied += body.copied || 0;
+      missing += body.missing || 0;
+      failed += body.failed?.length || 0;
+    }
+    button.textContent = `Copied ${copied} ✓`;
+    if (missing || failed) {
+      showError(`${copied} copied — but ${missing} original(s) are missing` +
+        `${failed ? ` and ${failed} failed` : ""}.`);
     }
     setTimeout(() => { button.textContent = "Export copies…"; }, 2200);
   } catch (error) {
@@ -954,8 +1024,20 @@ function disarmModalTrash() {
   }
 }
 
+// The viewer navigates whichever list the photo was opened from: an album's
+// members when album detail is open, otherwise the current search results.
+function modalContext() {
+  const albumOpen = state.view === "albums"
+    && !$("albumDetail").classList.contains("hidden")
+    && state.currentAlbum?.images?.length;
+  return albumOpen
+    ? { list: state.currentAlbum.images, album: true }
+    : { list: state.results, album: false };
+}
+
 async function openPhoto(imageId, filename = "") {
-  state.modalIndex = state.results.findIndex((r) => r.image_id === Number(imageId));
+  const ctx = modalContext();
+  state.modalIndex = ctx.list.findIndex((r) => r.image_id === Number(imageId));
   state.modalImageId = Number(imageId);
   disarmModalTrash();
   updateModalNav();
@@ -966,7 +1048,7 @@ async function openPhoto(imageId, filename = "") {
   $("photoModal").classList.remove("hidden");
   resetZoom();
   // The grid row usually knows the media type; details confirm it below.
-  const known = (state.modalIndex >= 0 ? state.results[state.modalIndex] : null)
+  const known = (state.modalIndex >= 0 ? ctx.list[state.modalIndex] : null)
     || (state.currentAlbum?.images || []).find((r) => r.image_id === Number(imageId));
   showModalMedia(imageId, known?.media_type === "video");
   $("modalName").textContent = filename || "Loading…";
@@ -1268,28 +1350,31 @@ function closePhoto() {
 }
 
 function updateModalNav() {
+  const ctx = modalContext();
   const i = state.modalIndex;
-  const inResults = i >= 0 && state.results.length > 0;
+  const inResults = i >= 0 && ctx.list.length > 0;
   const pages = Math.max(1, Math.ceil(state.total / state.perPage));
-  const canPage = !state.similarTo;
+  const canPage = !state.similarTo && !ctx.album;
   const hasPrev = inResults && (i > 0 || (canPage && state.page > 1));
-  const hasNext = inResults && (i < state.results.length - 1
+  const hasNext = inResults && (i < ctx.list.length - 1
     || (canPage && state.page < pages));
   $("modalPrev").classList.toggle("hidden", !hasPrev);
   $("modalNext").classList.toggle("hidden", !hasNext);
 }
 
 async function navigatePhoto(delta) {
+  const ctx = modalContext();
   const i = state.modalIndex;
-  if (i < 0 || !state.results.length) return;
+  if (i < 0 || !ctx.list.length) return;
   const next = i + delta;
-  if (next >= 0 && next < state.results.length) {
-    const photo = state.results[next];
+  if (next >= 0 && next < ctx.list.length) {
+    const photo = ctx.list[next];
     openPhoto(photo.image_id, photo.filename || "");
     return;
   }
-  // Walked off the page — fetch the neighbouring one and keep going.
-  if (state.similarTo) return;
+  // Walked off the page — fetch the neighbouring one and keep going. Albums
+  // and similar/pasted results are single, self-contained lists.
+  if (ctx.album || state.similarTo) return;
   const pages = Math.max(1, Math.ceil(state.total / state.perPage));
   if (delta > 0 && state.page < pages) {
     await search(state.page + 1);
@@ -1588,17 +1673,28 @@ async function loadPersonFaces(personId) {
       $("personFaces").innerHTML = '<div class="empty slim-empty">No faces recorded.</div>';
       return;
     }
-    $("personFaces").innerHTML = faces.map((f) => `
-      <button class="face-tile" type="button" data-face-id="${f.face_id}" data-image-id="${f.image_id}" title="Quality ${Math.round((f.quality || 0) * 100)}%${f.confirmed ? " · confirmed by you" : ""} — click to select, ↗ opens the photo">
+    const coverId = Number(state.currentPerson?.cover_face_id);
+    $("personFaces").innerHTML = faces.map((f) => {
+      const isCover = f.face_id === coverId;
+      return `
+      <button class="face-tile ${isCover ? "is-cover" : ""}" type="button" data-face-id="${f.face_id}" data-image-id="${f.image_id}" title="Quality ${Math.round((f.quality || 0) * 100)}%${f.confirmed ? " · confirmed by you" : ""} — click to select, ↗ opens the photo">
         <img class="face-img" loading="lazy" src="${faceCropUrl(f.face_id)}" alt="">
+        ${isCover ? '<span class="cover-badge" title="Profile picture">★</span>' : ""}
         ${f.confirmed ? '<span class="face-badge" aria-label="Confirmed">✓</span>' : ""}
         <span class="open-photo mono" data-open="${f.image_id}" title="Open the photo this face is from" role="button">↗</span>
-      </button>
-    `).join("");
+        ${isCover ? "" : `<span class="set-cover mono" data-cover="${f.face_id}" title="Use as this person’s profile picture" role="button">★</span>`}
+      </button>`;
+    }).join("");
     $("personFaces").querySelectorAll(".open-photo").forEach((corner) => {
       corner.addEventListener("click", (event) => {
         event.stopPropagation();
         openPhoto(Number(corner.dataset.open));
+      });
+    });
+    $("personFaces").querySelectorAll(".set-cover").forEach((star) => {
+      star.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setPersonCover(Number(star.dataset.cover));
       });
     });
     $("personFaces").querySelectorAll(".face-tile").forEach((tile) => {
@@ -1619,6 +1715,25 @@ async function loadPersonFaces(personId) {
     });
   } catch (error) {
     $("personFaces").innerHTML = `<div class="empty slim-empty">Could not load faces: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function setPersonCover(faceId) {
+  const person = state.currentPerson;
+  if (!person) return;
+  try {
+    const updated = await request(`/people/${person.person_id}/cover`, {
+      method: "POST",
+      body: JSON.stringify({ face_id: faceId }),
+    });
+    state.currentPerson = { ...person, ...updated };
+    $("personCover").innerHTML = coverHtml(state.currentPerson, "xl");
+    const listed = state.people.find((p) => p.person_id === person.person_id);
+    if (listed) listed.cover_face_id = updated.cover_face_id;
+    loadPersonFaces(person.person_id);
+    if (state.view === "people") renderPeopleGrid();
+  } catch (error) {
+    showError(`Could not set the profile photo: ${error.message}`);
   }
 }
 
@@ -2226,12 +2341,17 @@ async function addCurrentPhotoToAlbum(albumId) {
 async function searchByImageFile(file) {
   clearError();
   setView("photos");
+  const seq = ++state.searchSeq;
   $("photoGrid").innerHTML = skeletonGrid();
   startLoad();
   try {
     const form = new FormData();
     form.append("file", file, file.name || "pasted.png");
     form.append("per_page", String(state.perPage));
+    // Scope the reverse search the way the grid is currently scoped.
+    form.append("filters", JSON.stringify({
+      ...currentFilters(), ...state.savedFilterExtras,
+    }));
     const response = await fetch(`${API}/search/by-image`, {
       method: "POST",
       body: form,
@@ -2240,6 +2360,7 @@ async function searchByImageFile(file) {
     if (!response.ok) {
       throw new Error(body.detail || `Search failed (${response.status})`);
     }
+    if (seq !== state.searchSeq) return;
     state.similarTo = { pasted: true };
     setImageQuery({
       url: URL.createObjectURL(file),
@@ -2262,6 +2383,14 @@ async function searchByImageFile(file) {
 }
 
 function handlePaste(event) {
+  // Never hijack a paste into a text field (naming an album, renaming a
+  // person, typing a search) just because the clipboard held an image.
+  const target = event.target;
+  if (target instanceof HTMLElement && (
+      target.isContentEditable
+      || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) {
+    return;
+  }
   const items = event.clipboardData?.items || [];
   for (const item of items) {
     if (item.kind === "file" && item.type.startsWith("image/")) {
@@ -2490,14 +2619,18 @@ async function init() {
 
   $("searchForm").addEventListener("submit", (event) => {
     event.preventDefault();
-    search(1);
+    filterChanged();
   });
-  $("sortSelect").addEventListener("change", () => search(1));
-  $("dateFrom").addEventListener("change", () => search(1));
-  $("dateTo").addEventListener("change", () => search(1));
-  $("cameraFilter").addEventListener("change", () => search(1));
-  $("mediaFilter").addEventListener("change", () => search(1));
-  $("locationToggle").addEventListener("change", () => search(1));
+  $("sortSelect").addEventListener("change", filterChanged);
+  $("searchMode").addEventListener("change", () => {
+    syncSearchModeUi();
+    filterChanged();
+  });
+  $("dateFrom").addEventListener("change", filterChanged);
+  $("dateTo").addEventListener("change", filterChanged);
+  $("cameraFilter").addEventListener("change", filterChanged);
+  $("mediaFilter").addEventListener("change", filterChanged);
+  $("locationToggle").addEventListener("change", filterChanged);
   $("clearFilters").addEventListener("click", clearFilters);
   $("similarClear").addEventListener("click", () => {
     state.similarTo = null;
@@ -2512,6 +2645,7 @@ async function init() {
   $("peopleModeRow").querySelectorAll("input[name=peopleMode]").forEach((radio) => {
     radio.addEventListener("change", () => {
       state.peopleMode = radio.value;
+      state.savedFilterExtras = {};
       renderSelectedPeople();
       if (state.selectedPeople.length > 1) search(1, { keepPanel: true });
     });
@@ -2530,6 +2664,7 @@ async function init() {
   $("modalNext").addEventListener("click", () => navigatePhoto(1));
   $("untaggedReview").addEventListener("click", () => {
     state.untaggedOnly = true;
+    state.savedFilterExtras = {};
     setView("photos");
     renderSelectedPeople();
     search(1);

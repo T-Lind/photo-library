@@ -33,6 +33,9 @@ class LibraryFeatures:
                 raise ValueError("Rating must be between 0 and 5")
             value["rating"] = int(rating)
         catalog.put(self.library, f"annotation:{image_id}", value)
+        # The browse snapshot caches favorite/rating arrays; refresh it so a
+        # filtered search sees the change immediately.
+        self.index.invalidate()
         return {"image_id": image_id, **value}
 
     def saved_searches(self):
