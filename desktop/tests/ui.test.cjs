@@ -159,9 +159,15 @@ test('selection survives album paging without using a range anchor from another 
 
 test('narrow screens have no horizontal overflow', async t => {
   const { page } = await openApp(t, { width: 390, height: 844 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const checkOverflow = async () => {
+    const dimensions = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+      oversized: [...document.querySelectorAll('body *')].filter(el => el.getClientRects().length && el.getBoundingClientRect().right > innerWidth)
+        .slice(0, 12).map(el => el.id || el.className || el.tagName) }));
+    assert.ok(dimensions.scrollWidth <= dimensions.width, JSON.stringify(dimensions));
+  };
+  await checkOverflow();
   await page.getByRole('button', { name: 'Filters', exact: true }).click();
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await checkOverflow();
   if (process.env.PHOTOLIB_SCREENSHOTS) {
     mkdirSync(process.env.PHOTOLIB_SCREENSHOTS, { recursive: true });
     await page.screenshot({ path: join(process.env.PHOTOLIB_SCREENSHOTS, 'filters-mobile.png') });
@@ -169,4 +175,8 @@ test('narrow screens have no horizontal overflow', async t => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.screenshot({ path: join(process.env.PHOTOLIB_SCREENSHOTS, 'library-desktop.png') });
   }
+  if (await page.locator('#filtersDialog').evaluate(el => el.open)) await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#photoGrid .photo').first().click();
+  await checkOverflow();
 });

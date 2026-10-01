@@ -406,7 +406,15 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .grid-size { margin-left: 0; }
   .person-head { flex-direction: column; align-items: center; text-align: center; }
   .person-name-row { flex-direction: column; }
+  .modal { padding: 12px; }
+  .modal-info { flex-direction: column; align-items: stretch; }
+  .modal-buttons { justify-content: flex-start; flex-shrink: 1; }
   .picker-panel { width: min(320px, calc(100vw - 40px)); }
+}
+@media (max-width: 480px) {
+  .brand-tag { display: none; }
+  .tabs { flex-wrap: wrap; }
+  .tabs-meta { flex-basis: 100%; margin-left: 0; padding: 4px 16px 8px; }
 }
 :root { --curation-gold: #efd17e; }
 .curation-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px 24px; }

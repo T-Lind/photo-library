@@ -1076,7 +1076,7 @@ class PhotoService(LibraryFeatures):
             columns=["image_id", "phash", "content_hash", "file_size"])
         pairs = [(int(i), int(h)) for i, h in
                  zip(table["image_id"].to_pylist(), table["phash"].to_pylist())
-                 if h]
+                 if h is not None]
         sizes = {int(i): int(s or 0) for i, s in
                  zip(table["image_id"].to_pylist(),
                      table["file_size"].to_pylist())}
