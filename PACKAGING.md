@@ -90,6 +90,11 @@ AppImage tooling. On Linux, replace the GUI OpenCV wheel as shown above
 before freezing the sidecar; the app uses its own Tauri window and only
 needs OpenCV for image processing.
 
+For a Linux Tauri build, expose the frozen sidecar's shared-library directories
+in `LD_LIBRARY_PATH` during bundling. PyInstaller sets that path when launching
+the sidecar, but linuxdeploy inspects its libraries directly. The CI workflow
+sets the path and checks for unresolved native dependencies before bundling.
+
 ## How it starts
 
 1. The Tauri shell spawns `photolib-server --no-browser` as a sidecar.

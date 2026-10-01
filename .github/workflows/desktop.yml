@@ -179,6 +179,20 @@ jobs:
           set -o pipefail
           npm ci
           mkdir -p ../artifacts
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # PyInstaller normally supplies this search path at startup.
+            # linuxdeploy examines the shared objects directly instead.
+            mapfile -t sidecar_library_dirs < <(find "$PWD/src-tauri/binaries/_internal" -type f -name '*.so*' -printf '%h\n' | sort -u)
+            sidecar_library_path=$(IFS=:; echo "${sidecar_library_dirs[*]}")
+            export LD_LIBRARY_PATH="$sidecar_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            while IFS= read -r -d '' library; do
+              dependencies=$(ldd "$library" 2>/dev/null || true)
+              if [[ "$dependencies" == *"not found"* ]]; then
+                printf 'Unresolved dependencies in %s:\n%s\n' "$library" "$dependencies"
+                exit 1
+              fi
+            done < <(find "$PWD/src-tauri/binaries/_internal" -type f -name '*.so*' -print0)
+          fi
           npx tauri build --verbose --bundles "${{ matrix.bundles }}" 2>&1 | tee ../artifacts/desktop-build.log
 
       - name: Preserve installer diagnostics
