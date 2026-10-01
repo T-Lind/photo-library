@@ -60,10 +60,28 @@ fn main() {
 }
 
 fn start_server(handle: tauri::AppHandle) -> Result<(), String> {
+    // Keep the PyInstaller executable beside its _internal directory. Tauri
+    // resources live outside the shell's executable directory on macOS/Linux.
+    let binary = if cfg!(target_os = "windows") {
+        "photolib-server.exe"
+    } else {
+        "photolib-server"
+    };
+    let server_path = handle
+        .path()
+        .resource_dir()
+        .map_err(|err| format!("could not locate server resources: {err}"))?
+        .join("sidecar")
+        .join(binary);
+    if !server_path.is_file() {
+        return Err(format!(
+            "photolib-server is missing: {}",
+            server_path.display()
+        ));
+    }
     let (mut rx, child) = handle
         .shell()
-        .sidecar("photolib-server")
-        .map_err(|err| format!("photolib-server sidecar is missing: {err}"))?
+        .command(server_path)
         .args(["--no-browser"])
         .spawn()
         .map_err(|err| format!("failed to start the photolib server: {err}"))?;

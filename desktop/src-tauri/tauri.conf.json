@@ -22,9 +22,8 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "externalBin": ["binaries/photolib-server"],
     "resources": {
-      "binaries/_internal/": "_internal/"
+      "binaries/sidecar/": "sidecar/"
     },
     "shortDescription": "A local, private photo library",
     "longDescription": "Search your photos by describing them, and by face. Everything runs on your own machine.",

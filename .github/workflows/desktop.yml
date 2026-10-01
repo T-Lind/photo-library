@@ -148,12 +148,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/src-tauri/binaries
-          rm -rf desktop/src-tauri/binaries/_internal
-          rm -f desktop/src-tauri/binaries/photolib-server-*
-          # Tauri resolves sidecars by target-triple suffix.
-          cp -r dist/photolib-server/* desktop/src-tauri/binaries/
-          mv "desktop/src-tauri/binaries/photolib-server${{ matrix.exe }}" \
-             "desktop/src-tauri/binaries/photolib-server-${{ matrix.triple }}${{ matrix.exe }}"
+          # Preserve the complete one-folder layout in the resource directory.
+          cp -a dist/photolib-server desktop/src-tauri/binaries/sidecar
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -182,7 +178,7 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then
             # PyInstaller normally supplies this search path at startup.
             # linuxdeploy examines the shared objects directly instead.
-            mapfile -t sidecar_library_dirs < <(find "$PWD/src-tauri/binaries/_internal" -type f -name '*.so*' -printf '%h\n' | sort -u)
+            mapfile -t sidecar_library_dirs < <(find "$PWD/src-tauri/binaries/sidecar/_internal" -type f -name '*.so*' -printf '%h\n' | sort -u)
             sidecar_library_path=$(IFS=:; echo "${sidecar_library_dirs[*]}")
             export LD_LIBRARY_PATH="$sidecar_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             while IFS= read -r -d '' library; do
@@ -191,7 +187,7 @@ jobs:
                 printf 'Unresolved dependencies in %s:\n%s\n' "$library" "$dependencies"
                 exit 1
               fi
-            done < <(find "$PWD/src-tauri/binaries/_internal" -type f -name '*.so*' -print0)
+            done < <(find "$PWD/src-tauri/binaries/sidecar/_internal" -type f -name '*.so*' -print0)
           fi
           npx tauri build --verbose --bundles "${{ matrix.bundles }}" 2>&1 | tee ../artifacts/desktop-build.log
 
@@ -215,6 +211,19 @@ jobs:
             throw "Hybrid INT8 setup is $([math]::Round($installer.Length / 1MB)) MB; limit is 900 MB"
           }
           Write-Host "Hybrid INT8 setup: $([math]::Round($installer.Length / 1MB)) MB"
+
+      - name: Install the Windows package for verification
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $testInstall = Join-Path $PWD 'installer-smoke'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$testInstall" -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+
+      - name: Verify the installed sidecar layout
+        shell: bash
+        run: python tools/verify_desktop_bundle.py
 
       - uses: actions/upload-artifact@v4
         with:

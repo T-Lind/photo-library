@@ -12,8 +12,8 @@ def test_tauri_bundles_pyinstaller_support_directory():
         (ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
     )
     bundle = config["bundle"]
-    assert bundle["externalBin"] == ["binaries/photolib-server"]
-    assert bundle["resources"]["binaries/_internal/"] == "_internal/"
+    assert not bundle.get("externalBin")
+    assert bundle["resources"]["binaries/sidecar/"] == "sidecar/"
     assert bundle["targets"] == ["nsis", "dmg", "appimage", "deb"]
 
 
@@ -23,7 +23,7 @@ def test_windows_release_uses_a_clean_single_executable_installer():
     ).read_text(encoding="utf-8")
 
     assert "bundles: nsis" in workflow
-    assert "rm -rf desktop/src-tauri/binaries/_internal" in workflow
+    assert "cp -a dist/photolib-server desktop/src-tauri/binaries/sidecar" in workflow
     assert "bundle/nsis/*-setup.exe" in workflow
     assert "bundle/**/*.msi" not in workflow
 

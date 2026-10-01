@@ -65,9 +65,7 @@ PHOTOLIB_MODEL_VARIANT=int8 pyinstaller packaging/photolib.spec --noconfirm --cl
 
 # 3. Stage the complete one-folder sidecar for Tauri
 mkdir -p desktop/src-tauri/binaries
-cp -r dist/photolib-server/* desktop/src-tauri/binaries/
-mv desktop/src-tauri/binaries/photolib-server.exe \
-   desktop/src-tauri/binaries/photolib-server-x86_64-pc-windows-msvc.exe
+cp -a dist/photolib-server desktop/src-tauri/binaries/sidecar
 cd desktop && npm ci && npx tauri build --bundles nsis
 ```
 
@@ -97,7 +95,11 @@ sets the path and checks for unresolved native dependencies before bundling.
 
 ## How it starts
 
-1. The Tauri shell spawns `photolib-server --no-browser` as a sidecar.
+1. The Tauri shell resolves `sidecar/photolib-server` inside its resource
+   directory and spawns it with `--no-browser`. The executable stays beside
+   its `_internal` support folder on every platform. CI verifies model parity,
+   UI/API startup, and shutdown from the packaged layout after bundling (from
+   an installed NSIS package on Windows and extracted DEB/AppImage on Linux).
 2. The server picks a **free port** — hardcoding 8000 fails on any machine
    where something already holds it — waits until that port is accepting
    health requests, then prints `PHOTOLIB_READY {"url": ...}`.
