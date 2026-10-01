@@ -33,10 +33,12 @@ def create_album(req: AlbumCreateRequest,
 
 @router.get("/{album_id}")
 def album_detail(album_id: int, limit: int = Query(500, ge=1, le=2000),
+                 page: int = Query(1, ge=1),
+                 per_page: int | None = Query(None, ge=1, le=200),
                  service: PhotoService = Depends(get_service)):
-    """The album plus its photos, newest addition first."""
+    """A page of album photos, newest addition first; limit remains compatible."""
     try:
-        return service.album_detail(album_id, limit)
+        return service.album_detail(album_id, limit, page, per_page)
     except Exception as exc:
         raise translate_errors(exc)
 

@@ -43,16 +43,28 @@ exist. Million-photo and intermittently connected drive workflows need more work
   saved searches, and roots. Restore provides a verification preview and reports
   unmatched or conflicting items. Original files, the complete generated index,
   caches, and model weights remain outside this curation backup.
+- The September 30 usability pass removes album membership truncation and
+  adds API/UI pagination plus cross-page viewer navigation. Album pages hydrate
+  only visible image rows; ordering still reads the selected album's complete
+  ID/date metadata. Album lookup no longer scans every album's membership.
+- Near-duplicate matching now probes neighboring hash bands, so differences
+  spread across all four bands are still found. Equal hashes are collapsed
+  before matching, large buckets are retained, and broader radii use an exact
+  Hamming BK-tree. Default-radius scale tests remain bounded; broad-radius or
+  adversarial hash collections can still be expensive.
+- Browse controls now put secondary filters and saved-search editing in
+  dialogs, show active filter summaries, and remember the chosen thumbnail size.
+  Browser smoke tests exercise these controls, pagination, and modal focus.
 
 **Highest-priority remaining scale work**
 
 | Priority | Finding in current code | Recommended change |
 |---|---|---|
-| Next | Discovery keeps all paths, sorts them, and loads a full-library Python metadata dictionary. `_existing_files` also turns any read exception into an empty catalog. | Stream discovery into a durable, source-scoped manifest; fail clearly on catalog read errors. Persist scan checkpoints and last-seen generation; expose progress/cancellation during discovery. |
+| Next | Discovery keeps all paths, sorts them, and loads a full-library Python metadata dictionary. Catalog read errors now propagate rather than being treated as an empty catalog. | Stream discovery into a durable, source-scoped manifest. Persist scan checkpoints and last-seen generation; expose progress/cancellation during discovery. |
 | Next | Every image-table version change can rebuild the complete browse snapshot, including OCR; OCR searches loop over text in Python. | Measure invalidation under active ingestion; coalesce snapshot refreshes and add an indexed text-search path. |
 | Next | Broad filtered ANN search can still over-fetch up to the library size, and its heuristic does not guarantee filtered recall. Vector and scalar indexes are recreated after each non-empty indexing run. | Plan filtered queries using scalar predicates; evaluate recall versus exact ranking, maintain indexes incrementally, and schedule training/compaction based on measured thresholds. |
 | Next | Full reclustering computes all-pairs similarities in blocks. Memory is partially bounded but time is still quadratic; the default guard permits 400k faces. | Construct a nearest-neighbor graph with ANN, retain confirmed identities, and support resumable clustering. Do not interpret the 400k guard as a demonstrated capacity. |
-| Next | Several service methods cap album and face reads at fixed limits (100k/500k), and the album detail view takes at most 500 images. | Add proper pagination/streaming and make truncation visible instead of silently omitting records. |
+| Next | Several face service methods still cap reads at 100k/500k. Album truncation has been removed, but page ordering reads all membership metadata for the selected album. | Stream face maintenance reads; measure very large album ordering and consider cached ordering or cursor pagination. |
 
 **Multiple-drive design**
 

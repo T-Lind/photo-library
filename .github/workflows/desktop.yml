@@ -159,15 +159,27 @@ jobs:
           sudo apt-get update
           # Tauri v2 links against webkit2gtk-4.1 (javascriptcoregtk-4.1); the
           # old 4.0 packages no longer satisfy the crate and fail the build.
+          # linuxdeploy's helper AppImages also need the FUSE 2 runtime.
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf \
-            libxdo-dev libssl-dev build-essential
+            libxdo-dev libssl-dev build-essential libfuse2
 
       - name: Build the installer
         working-directory: desktop
+        shell: bash
         run: |
+          set -o pipefail
           npm ci
-          npx tauri build --bundles "${{ matrix.bundles }}"
+          mkdir -p ../artifacts
+          npx tauri build --verbose --bundles "${{ matrix.bundles }}" 2>&1 | tee ../artifacts/desktop-build.log
+
+      - name: Preserve installer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.os }}
+          path: artifacts/desktop-build.log
+          if-no-files-found: ignore
 
       - name: Guard the standard Windows installer size
         if: matrix.os == 'windows-latest' && env.MODEL_VARIANT == 'int8'
@@ -203,6 +215,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: photolib-*
 
       - uses: softprops/action-gh-release@v2
         with:

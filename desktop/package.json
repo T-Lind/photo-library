@@ -5,9 +5,11 @@
   "description": "Native desktop shell for photolib",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "test:ui": "node --test tests/ui.test.cjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "playwright": "1.62.1"
   }
 }

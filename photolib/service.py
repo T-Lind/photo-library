@@ -1581,11 +1581,23 @@ class PhotoService(LibraryFeatures):
         return out
 
     def get_album(self, album_id: int) -> dict:
-        album = next((a for a in self.list_albums()
-                      if a["album_id"] == int(album_id)), None)
-        if album is None:
+        album_id = int(album_id)
+        if not self.library.has_albums():
             raise NotFound(f"Album {album_id} not found")
-        return album
+        rows = (self.library.albums.search().where(f"album_id = {album_id}")
+                .limit(1).to_arrow().to_pylist())
+        if not rows:
+            raise NotFound(f"Album {album_id} not found")
+        album = rows[0]
+        where = f"album_id = {album_id}"
+        count = self.library.album_items.count_rows(where)
+        cover = album["cover_image_id"]
+        if cover is None or int(cover) < 0:
+            first = (self.library.album_items.search().where(where)
+                     .select(["image_id"]).limit(1).to_arrow().to_pylist())
+            cover = first[0]["image_id"] if first else -1
+        return {"album_id": album_id, "name": album["name"] or f"Album {album_id}",
+                "photo_count": count, "cover_image_id": int(cover)}
 
     @catalog.serialized
     def create_album(self, name: str) -> dict:
@@ -1619,22 +1631,29 @@ class PhotoService(LibraryFeatures):
 
     def album_image_ids(self, album_id: int) -> List[int]:
         """Album members, newest addition first."""
-        rows = (
-            self.library.album_items.search()
-            .where(f"album_id = {int(album_id)}")
-            .select(["image_id", "added_at"])
-            .limit(100_000)
-            .to_arrow()
-            .to_pylist()
-        )
-        rows.sort(key=lambda r: (r["added_at"] is not None, r["added_at"]),
-                  reverse=True)
-        return [int(r["image_id"]) for r in rows]
+        rows = self._album_members(album_id)
+        return [int(i) for i in rows["image_id"].to_pylist()]
 
-    def album_detail(self, album_id: int, limit: int = 500) -> dict:
+    def _album_members(self, album_id: int):
+        # Only IDs and addition dates for this album, never image vectors.
+        # A second sort key keeps pages stable for batch additions.
+        return self.library.album_items.to_lance().to_table(
+            columns=["image_id", "added_at"], filter=f"album_id = {int(album_id)}"
+        ).sort_by([("added_at", "descending"), ("image_id", "descending")])
+
+    def album_detail(self, album_id: int, limit: int = 500, page: int = 1,
+                     per_page: Optional[int] = None) -> dict:
         album = self.get_album(album_id)
-        ids = self.album_image_ids(album_id)[:limit]
-        return {**album, "images": self.hydrate(ids)}
+        page_size = per_page if per_page is not None else limit
+        if page < 1 or page_size < 1:
+            raise ValueError("page and page size must be positive")
+        members = self._album_members(album_id)
+        total = members.num_rows
+        offset = (page - 1) * page_size
+        ids = members.slice(offset, page_size)["image_id"].to_pylist()
+        return {**album, "photo_count": total, "total": total, "page": page,
+                "per_page": page_size, "has_more": offset + page_size < total,
+                "images": self.hydrate(ids)}
 
     @catalog.serialized
     def add_album_items(self, album_id: int, image_ids: Sequence[int]) -> dict:
