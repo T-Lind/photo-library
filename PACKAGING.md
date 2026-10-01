@@ -56,6 +56,11 @@ python tools/export_onnx.py --model google/siglip2-base-patch16-224 \
 
 # 2. Freeze the server (the tracked desktop/ui is bundled directly)
 pip install -r requirements-desktop.txt
+# Linux only: use headless OpenCV to avoid unused Qt/X11 bundle dependencies.
+if [ "$(uname -s)" = "Linux" ]; then
+  pip uninstall -y opencv-python
+  pip install --no-deps opencv-python-headless==4.11.0.86
+fi
 PHOTOLIB_MODEL_VARIANT=int8 pyinstaller packaging/photolib.spec --noconfirm --clean
 
 # 3. Stage the complete one-folder sidecar for Tauri
@@ -80,7 +85,10 @@ photolib_2.0.3_x64-setup.exe /S
 
 Windows needs the MSVC build tools and WebView2 (present on Windows 10 21H2
 and later). macOS needs Xcode command line tools. Linux needs
-`libwebkit2gtk` and `libgtk-3` development packages.
+`libwebkit2gtk` and `libgtk-3` development packages, and `libfuse2` for
+AppImage tooling. On Linux, replace the GUI OpenCV wheel as shown above
+before freezing the sidecar; the app uses its own Tauri window and only
+needs OpenCV for image processing.
 
 ## How it starts
 

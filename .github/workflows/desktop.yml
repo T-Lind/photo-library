@@ -106,6 +106,14 @@ jobs:
           # This lock set has no torch or transformers; the frozen app
           # runs entirely on the pinned, Windows-tested ONNX Runtime.
           pip install -r requirements-desktop.txt
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # InsightFace requests the GUI OpenCV wheel, whose private Qt/X11
+            # libraries confuse linuxdeploy. The sidecar only processes pixels;
+            # use the same OpenCV release without a second window toolkit.
+            pip uninstall -y opencv-python
+            pip install --no-deps opencv-python-headless==4.11.0.86
+            python -c 'import cv2, numpy as np; from rapidocr_onnxruntime import RapidOCR; assert cv2.resize(np.zeros((16, 16, 3), dtype=np.uint8), (8, 8)).shape == (8, 8, 3); RapidOCR(); print(cv2.getBuildInformation())'
+          fi
 
       - name: Build the sidecar
         shell: bash
