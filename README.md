@@ -39,6 +39,8 @@ and organize albums in a desktop app built for real family libraries of
   moved folder or changed drive letter.
 - **Curation** — favorites, 0–5 star ratings, saved searches, albums, and a
   checksummed backup containing exact confirmed face assignments.
+- **Comfortable browsing** — compact controls, visible active filters, adjustable
+  thumbnail sizes, and paginated albums with continuous viewer navigation.
 
 ![Photolib people view](docs/images/photolib-people.png)
 
@@ -49,7 +51,7 @@ Download the current **Windows x64 setup** from the
 Nothing else is required: no Python, Node.js, account, or API key.
 
 1. Close Photolib if an older copy is running.
-2. Run the downloaded `photolib_2.0.3_x64-setup.exe`.
+2. Run the downloaded Windows x64 setup executable; its version is shown on the release.
 3. Open **photolib** from the Start menu and choose a photo folder.
 
 The app leaves your library data alone during upgrades. The installer is not
@@ -70,10 +72,12 @@ for the cross-platform build configuration and source packaging instructions.
 source .venv/bin/activate
 
 python -m photolib.cli index ~/Pictures      # index (recursive, incremental)
-python run.py                                # API on http://127.0.0.1:8000
+PHOTO_WEB_DIR=desktop/ui python run.py        # desktop UI + API on localhost:8000
 ```
 
-Then open <http://127.0.0.1:8000/docs> for the API, or run the frontend.
+Then open <http://127.0.0.1:8000> for the app, or
+<http://127.0.0.1:8000/docs> for the API. In PowerShell, set
+`$env:PHOTO_WEB_DIR = "desktop/ui"` before running `python run.py`.
 
 Searching from the terminal works too:
 
@@ -297,6 +301,19 @@ stub models, so it needs no model downloads and finishes in a few seconds.
 It covers indexing, incremental updates, clustering behaviour, search
 ranking, filtering, pagination, the HTTP layer, and scaling of the browse
 index at 200k photos.
+
+The desktop UI also has browser smoke tests for filters, saved searches,
+album pagination and viewer navigation, keyboard focus, and narrow screens:
+
+```bash
+cd desktop
+npm ci
+npx playwright install chromium
+npm run test:ui
+```
+
+These browser tests use a deterministic API fixture; the Python suite tests
+the actual backend and database. Both run in CI.
 
 ## Requirements
 

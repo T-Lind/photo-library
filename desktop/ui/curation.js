@@ -12,6 +12,7 @@ function initCuration() {
           query:$("searchInput").value || null, sort:$("sortSelect").value}})});
       $("savedSearchName").value = "";
       await loadSavedSearches();
+      $("savedSearchDialog").close();
     } catch (error) { showError(error.message); }
   });
   $("savedSearchSelect").addEventListener("change", applySavedSearch);
@@ -38,6 +39,7 @@ async function loadSavedSearches() {
 }
 
 function applySavedSearch() {
+  $("deleteSavedSearch").disabled = !$("savedSearchSelect").value;
   const saved = savedSearchItems.find(s => s.id === $("savedSearchSelect").value);
   if (!saved) return;
   const r = saved.request;

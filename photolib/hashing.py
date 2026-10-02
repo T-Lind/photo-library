@@ -81,29 +81,24 @@ def phash_file(path: os.PathLike | str) -> int:
 
 
 def hamming(a: int, b: int) -> int:
-    return bin(_unsigned(a) ^ _unsigned(b)).count("1")
+    return (_unsigned(a) ^ _unsigned(b)).bit_count()
 
 
 def group_near_duplicates(items: Iterable[Tuple[int, int]],
                           max_distance: int = 6) -> List[List[int]]:
     """Group ``(image_id, phash)`` pairs into near-duplicate sets.
 
-    Uses multi-index bucketing (split the 64-bit hash into 4 x 16-bit bands):
-    two hashes within `max_distance <= 6` bits must agree exactly on at least
-    one band by the pigeonhole principle, so only same-band pairs need to be
-    compared. That turns an O(n^2) sweep over 200k photos into a couple of
-    dictionary passes.
+    For distances up to seven, probe four 16-bit bands within distance
+    ``max_distance // 4``. At least one band must satisfy that bound, so
+    candidates are complete even when every band differs. Larger radii use
+    an exact Hamming BK-tree. Equal hashes are collapsed before matching;
+    large buckets never silently lose matches.
     """
     items = list(items)
+    if not 0 <= max_distance <= 64:
+        raise ValueError("max_distance must be between 0 and 64")
     if not items:
         return []
-
-    bands: List[dict] = [dict() for _ in range(4)]
-    for image_id, h in items:
-        uh = _unsigned(h)
-        for b in range(4):
-            key = (uh >> (16 * b)) & 0xFFFF
-            bands[b].setdefault(key, []).append(image_id)
 
     parent = {image_id: image_id for image_id, _ in items}
 
@@ -118,17 +113,56 @@ def group_near_duplicates(items: Iterable[Tuple[int, int]],
         if ra != rb:
             parent[rb] = ra
 
-    hashes = dict(items)
-    for band in bands:
-        for bucket in band.values():
-            if len(bucket) < 2 or len(bucket) > 512:
-                # Huge buckets are degenerate (e.g. thousands of black
-                # frames); comparing them all pairwise is not worth it.
+    representatives: dict[int, int] = {}
+    for image_id, value in items:
+        value = _unsigned(value)
+        if value in representatives:
+            union(image_id, representatives[value])
+        else:
+            representatives[value] = image_id
+
+    if max_distance == 64:
+        first = items[0][0]
+        for image_id, _ in items:
+            union(first, image_id)
+    elif max_distance <= 7:
+        bands: List[dict] = [dict() for _ in range(4)]
+        masks = [0] + ([1 << bit for bit in range(16)] if max_distance >= 4 else [])
+        for value, image_id in representatives.items():
+            candidates: set[int] = set()
+            for band_index, band in enumerate(bands):
+                key = (value >> (16 * band_index)) & 0xFFFF
+                for mask in masks:
+                    candidates.update(band.get(key ^ mask, ()))
+            for other in candidates:
+                if (value ^ other).bit_count() <= max_distance:
+                    union(image_id, representatives[other])
+            for band_index, band in enumerate(bands):
+                key = (value >> (16 * band_index)) & 0xFFFF
+                band.setdefault(key, []).append(value)
+    elif representatives:
+        # A node is (hash, children keyed by distance from that hash).
+        root = None
+        for value, image_id in representatives.items():
+            if root is None:
+                root = (value, {})
                 continue
-            for i, a in enumerate(bucket):
-                for b in bucket[i + 1:]:
-                    if hamming(hashes[a], hashes[b]) <= max_distance:
-                        union(a, b)
+            pending = [root]
+            while pending:
+                other, children = pending.pop()
+                distance = (value ^ other).bit_count()
+                if distance <= max_distance:
+                    union(image_id, representatives[other])
+                pending.extend(child for edge, child in children.items()
+                               if distance - max_distance <= edge <= distance + max_distance)
+            node = root
+            while True:
+                distance = (value ^ node[0]).bit_count()
+                child = node[1].get(distance)
+                if child is None:
+                    node[1][distance] = (value, {})
+                    break
+                node = child
 
     groups: dict = {}
     for image_id, _ in items:

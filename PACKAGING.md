@@ -56,13 +56,16 @@ python tools/export_onnx.py --model google/siglip2-base-patch16-224 \
 
 # 2. Freeze the server (the tracked desktop/ui is bundled directly)
 pip install -r requirements-desktop.txt
+# Linux only: use headless OpenCV to avoid unused Qt/X11 bundle dependencies.
+if [ "$(uname -s)" = "Linux" ]; then
+  pip uninstall -y opencv-python
+  pip install --no-deps opencv-python-headless==4.11.0.86
+fi
 PHOTOLIB_MODEL_VARIANT=int8 pyinstaller packaging/photolib.spec --noconfirm --clean
 
 # 3. Stage the complete one-folder sidecar for Tauri
 mkdir -p desktop/src-tauri/binaries
-cp -r dist/photolib-server/* desktop/src-tauri/binaries/
-mv desktop/src-tauri/binaries/photolib-server.exe \
-   desktop/src-tauri/binaries/photolib-server-x86_64-pc-windows-msvc.exe
+cp -a dist/photolib-server desktop/src-tauri/binaries/sidecar
 cd desktop && npm ci && npx tauri build --bundles nsis
 ```
 
@@ -80,11 +83,23 @@ photolib_2.0.3_x64-setup.exe /S
 
 Windows needs the MSVC build tools and WebView2 (present on Windows 10 21H2
 and later). macOS needs Xcode command line tools. Linux needs
-`libwebkit2gtk` and `libgtk-3` development packages.
+`libwebkit2gtk` and `libgtk-3` development packages, and `libfuse2` for
+AppImage tooling. On Linux, replace the GUI OpenCV wheel as shown above
+before freezing the sidecar; the app uses its own Tauri window and only
+needs OpenCV for image processing.
+
+For a Linux Tauri build, expose the frozen sidecar's shared-library directories
+in `LD_LIBRARY_PATH` during bundling. PyInstaller sets that path when launching
+the sidecar, but linuxdeploy inspects its libraries directly. The CI workflow
+sets the path and checks for unresolved native dependencies before bundling.
 
 ## How it starts
 
-1. The Tauri shell spawns `photolib-server --no-browser` as a sidecar.
+1. The Tauri shell resolves `sidecar/photolib-server` inside its resource
+   directory and spawns it with `--no-browser`. The executable stays beside
+   its `_internal` support folder on every platform. CI verifies model parity,
+   UI/API startup, and shutdown from the packaged layout after bundling (from
+   an installed NSIS package on Windows and extracted DEB/AppImage on Linux).
 2. The server picks a **free port** — hardcoding 8000 fails on any machine
    where something already holds it — waits until that port is accepting
    health requests, then prints `PHOTOLIB_READY {"url": ...}`.

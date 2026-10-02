@@ -1066,7 +1066,7 @@ paths:
       tags:
       - albums
       summary: Album Detail
-      description: The album plus its photos, newest addition first.
+      description: A page of album photos, newest addition first; limit remains compatible.
       operationId: album_detail_api_v1_albums__album_id__get
       parameters:
       - name: album_id
@@ -1084,6 +1084,24 @@ paths:
           minimum: 1
           default: 500
           title: Limit
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 200
+            minimum: 1
+          - type: 'null'
+          title: Per Page
       responses:
         '200':
           description: Successful Response

@@ -10,6 +10,14 @@ import pytest
 API = "/api/v1"
 
 
+def test_duplicate_search_retains_zero_perceptual_hashes(client, indexed_service):
+    ids = indexed_service.index.image_ids[:2].tolist()
+    indexed_service.library.images.update(
+        where=f"image_id IN ({', '.join(str(i) for i in ids)})", values={"phash": 0})
+    groups = client.get(f"{API}/admin/duplicates").json()["groups"]
+    assert any(g["kind"] == "similar" and set(ids) <= set(g["image_ids"]) for g in groups)
+
+
 def test_cached_thumbnail_available_when_drive_is_offline(client, indexed_service):
     from pathlib import Path
 

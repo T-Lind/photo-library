@@ -97,17 +97,7 @@
                 <div id="peopleOptions" class="picker-list"></div>
               </div>
             </div>
-            <input id="dateFrom" class="field slim" type="date" aria-label="Taken after" title="Taken after">
-            <input id="dateTo" class="field slim" type="date" aria-label="Taken before" title="Taken before">
-            <select id="cameraFilter" class="select slim hidden" aria-label="Camera"><option value="">Any camera</option></select>
-            <select id="mediaFilter" class="select slim" aria-label="Photos or videos">
-              <option value="">Photos + videos</option>
-              <option value="image">Photos only</option>
-              <option value="video">Videos only</option>
-            </select>
-            <label class="toggle mono" id="locationToggleWrap" title="Only photos with GPS data">
-              <input id="locationToggle" type="checkbox"> has location
-            </label>
+            <button id="filtersButton" class="btn" type="button" aria-haspopup="dialog">Filters</button>
             <select id="sortSelect" class="select slim" aria-label="Sort photos">
               <option value="relevance">Best match</option>
               <option value="quality">Best quality + match</option>
@@ -117,19 +107,11 @@
               <option value="random">Shuffle</option>
             </select>
             <button id="clearFilters" class="btn ghost" type="button">Clear</button>
-            <label class="toggle mono"><input id="favoritesOnly" type="checkbox"> Favorites</label>
-            <select id="minRating" class="select slim" aria-label="Minimum rating">
-              <option value="0">Any rating</option><option value="1">1+ stars</option>
-              <option value="2">2+ stars</option><option value="3">3+ stars</option>
-              <option value="4">4+ stars</option><option value="5">5 stars</option>
-            </select>
-          </div>
-          <form id="saveSearchForm" class="filterbar">
-            <input id="savedSearchName" class="field slim" maxlength="200" placeholder="Name this search" aria-label="Saved search name">
-            <button class="btn ghost" type="submit">Save search</button>
             <select id="savedSearchSelect" class="select slim" aria-label="Saved searches"><option value="">Saved searches…</option></select>
-            <button id="deleteSavedSearch" class="btn ghost" type="button">Remove saved search</button>
-          </form>
+            <button id="saveSearchButton" class="btn ghost" type="button" aria-haspopup="dialog">Save / manage…</button>
+            <label class="grid-size">Photo size <input id="gridSize" type="range" min="140" max="300" step="20" value="180" aria-label="Thumbnail size"></label>
+          </div>
+          <p id="filterSummary" class="filter-summary hidden" aria-live="polite"></p>
 
           <div id="selectedPeople" class="chips hidden" aria-label="People in this search"></div>
           <div id="recentSearches" class="chips hidden" aria-label="Recent searches"></div>
@@ -210,6 +192,11 @@
                   <span class="section-hint mono">hover a photo for remove · click to open</span>
                 </div>
                 <div id="albumPhotos" class="grid"></div>
+                <nav id="albumPager" class="pager hidden" aria-label="Album pages">
+                  <button id="albumPrevPage" class="btn ghost" type="button">Previous</button>
+                  <span id="albumPageLabel" class="mono"></span>
+                  <button id="albumNextPage" class="btn ghost" type="button">Next</button>
+                </nav>
               </div>
             </section>
           </div>
@@ -359,6 +346,30 @@
       <button id="selClear" class="btn ghost" type="button" title="Or press Escape">Clear</button>
     </div>
   </div>
+
+  <dialog id="filtersDialog" class="settings-dialog" aria-labelledby="filtersTitle">
+    <div class="panel-head"><h2 id="filtersTitle">Filter your photos</h2><button id="filtersClose" class="btn ghost" type="button">Done</button></div>
+    <div class="filter-fields">
+      <label>Taken after<input id="dateFrom" class="field" type="date" aria-label="Taken after"></label>
+      <label>Taken before<input id="dateTo" class="field" type="date" aria-label="Taken before"></label>
+      <select id="cameraFilter" class="select hidden" aria-label="Camera"><option value="">Any camera</option></select>
+      <label>Media<select id="mediaFilter" class="select" aria-label="Photos or videos"><option value="">Photos + videos</option><option value="image">Photos only</option><option value="video">Videos only</option></select></label>
+      <label>Minimum rating<select id="minRating" class="select" aria-label="Minimum rating"><option value="0">Any rating</option><option value="1">1+ stars</option><option value="2">2+ stars</option><option value="3">3+ stars</option><option value="4">4+ stars</option><option value="5">5 stars</option></select></label>
+      <label class="toggle"><input id="favoritesOnly" type="checkbox"> Favorites only</label>
+      <label class="toggle" id="locationToggleWrap"><input id="locationToggle" type="checkbox"> Has location</label>
+    </div>
+    <p class="filter-summary">Changes update your results as you choose.</p>
+  </dialog>
+
+  <dialog id="savedSearchDialog" class="settings-dialog" aria-labelledby="savedSearchTitle">
+    <div class="panel-head"><h2 id="savedSearchTitle">Save this search</h2><button id="savedSearchClose" class="btn ghost" type="button">Close</button></div>
+    <p>Your description, people, filters and sort order will be saved together.</p>
+    <form id="saveSearchForm" class="folder-row">
+      <input id="savedSearchName" class="field" required maxlength="200" placeholder="Name this search" aria-label="Saved search name">
+      <button class="btn primary" type="submit">Save search</button>
+    </form>
+    <button id="deleteSavedSearch" class="btn ghost danger" type="button" disabled>Remove selected saved search</button>
+  </dialog>
 
   <dialog id="burstDialog" class="burst-dialog" aria-label="Compare burst photos">
     <div class="panel-head"><div><h2>Compare nearby shots</h2><p id="burstSummary"></p></div>

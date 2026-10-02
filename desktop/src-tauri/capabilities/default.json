@@ -4,10 +4,6 @@
   "description": "Permissions for the photolib desktop shell. Deliberately minimal: the app needs to start its own bundled server and nothing else.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [{ "name": "binaries/photolib-server", "sidecar": true }]
-    }
+    "core:default"
   ]
 }

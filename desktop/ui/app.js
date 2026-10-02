@@ -26,6 +26,8 @@ const state = {
   mergeArmedId: null,
   albums: [],
   currentAlbum: null,
+  albumPage: 1,
+  albumSeq: 0,
   albumDeleteArmed: false,
   loadCount: 0,
   selection: new Set(),   // image_ids picked for a batch action
@@ -45,6 +47,91 @@ const RECENT_LIMIT = 8;
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Custom overlays share focus management; native dialogs manage their own.
+const overlayStack = [];
+const overlayFocus = new Map();
+const overlayIds = ["personModal", "photoModal", "shortcutModal"];
+const focusable = (root) => [...root.querySelectorAll(
+  'button, input, select, textarea, a[href], [tabindex="0"]'
+)].filter(el => !el.disabled && el.getClientRects().length && !el.closest("[inert]"));
+
+function syncOverlayFocus() {
+  const top = overlayStack.at(-1);
+  document.querySelectorAll(".topbar, .shell, #selectionBar").forEach(el => { el.inert = Boolean(top); });
+  overlayIds.forEach(id => {
+    $(id).inert = Boolean(top && top !== id);
+    $(id).style.zIndex = String(100 + Math.max(0, overlayStack.indexOf(id)) * 10);
+  });
+}
+
+function showOverlay(id, firstFocus) {
+  if (!$(id).classList.contains("hidden")) return;
+  overlayFocus.set(id, document.activeElement);
+  overlayStack.push(id);
+  $(id).classList.remove("hidden");
+  syncOverlayFocus();
+  (firstFocus ? $(firstFocus) : focusable($(id))[0])?.focus();
+}
+
+function hideOverlay(id) {
+  $(id).classList.add("hidden");
+  const index = overlayStack.indexOf(id);
+  if (index < 0) return;
+  const wasTop = index === overlayStack.length - 1;
+  overlayStack.splice(index, 1);
+  syncOverlayFocus();
+  const previous = overlayFocus.get(id);
+  overlayFocus.delete(id);
+  if (!wasTop) return;
+  if (previous?.isConnected && previous.getClientRects().length && !previous.closest("[inert]")) previous.focus();
+  else focusable(overlayStack.length ? $(overlayStack.at(-1)) : $("librarySection"))[0]?.focus();
+}
+
+function initBrowseControls() {
+  $("filtersButton").addEventListener("click", () => $("filtersDialog").showModal());
+  $("filtersClose").addEventListener("click", () => $("filtersDialog").close());
+  $("saveSearchButton").addEventListener("click", () => {
+    $("deleteSavedSearch").disabled = !$("savedSearchSelect").value;
+    $("savedSearchDialog").showModal();
+    $("savedSearchName").focus();
+  });
+  $("savedSearchClose").addEventListener("click", () => $("savedSearchDialog").close());
+  const storedSize = Number(localStorage.getItem("photolib.gridSize"));
+  if (storedSize >= 140 && storedSize <= 300) $("gridSize").value = String(storedSize);
+  const resize = () => {
+    document.documentElement.style.setProperty("--grid-size", `${$("gridSize").value}px`);
+    localStorage.setItem("photolib.gridSize", $("gridSize").value);
+  };
+  $("gridSize").addEventListener("input", resize);
+  resize();
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Tab" || !overlayStack.length || document.querySelector("dialog[open]")) return;
+    const elements = focusable($(overlayStack.at(-1)));
+    if (!elements.length) { event.preventDefault(); return; }
+    const at = elements.indexOf(document.activeElement);
+    if (event.shiftKey && at <= 0) { event.preventDefault(); elements.at(-1).focus(); }
+    else if (!event.shiftKey && (at < 0 || at === elements.length - 1)) { event.preventDefault(); elements[0].focus(); }
+  });
+}
+
+function renderFilterSummary() {
+  const labels = [];
+  if ($("dateFrom").value) labels.push(`From ${$("dateFrom").value}`);
+  if ($("dateTo").value) labels.push(`Through ${$("dateTo").value}`);
+  if ($("cameraFilter").value) labels.push($("cameraFilter").value);
+  if ($("mediaFilter").value) labels.push($("mediaFilter").value === "video" ? "Videos only" : "Photos only");
+  if ($("locationToggle").checked) labels.push("Has location");
+  if ($("favoritesOnly").checked) labels.push("Favorites only");
+  if (Number($("minRating").value)) labels.push(`${$("minRating").value}+ stars`);
+  if (state.savedFilterExtras.folder) labels.push(`Folder: ${state.savedFilterExtras.folder}`);
+  if (state.savedFilterExtras.has_faces != null) labels.push(state.savedFilterExtras.has_faces ? "Has faces" : "No faces");
+  if (state.untaggedOnly) labels.push("Unidentified faces");
+  if (state.near) labels.push(`Within ${state.near.km} km of selected location`);
+  $("filtersButton").textContent = labels.length ? `Filters (${labels.length})` : "Filters";
+  $("filterSummary").textContent = labels.join(" · ");
+  $("filterSummary").classList.toggle("hidden", !labels.length);
+}
 
 // ---------------------------------------------------------------------------
 // Fetch + loading strip
@@ -568,6 +655,7 @@ function clearFilters() {
 
 async function search(page = 1, { keepPanel = false } = {}) {
   clearError();
+  renderFilterSummary();
   if (!keepPanel) togglePeoplePanel(false);
   // A newer search supersedes this one; if it finishes first, this response
   // must not overwrite the grid with stale results.
@@ -672,6 +760,7 @@ function browsePerson(personId) {
 
 function renderPhotos(result) {
   const grid = $("photoGrid");
+  state.selectionAnchor = -1;
   state.results = result.results;
   if (!result.results.length) {
     grid.innerHTML = '<div class="empty">No photos matched. Broaden the description, widen the dates, or remove a person filter.</div>';
@@ -727,7 +816,7 @@ function handleSelectClick(event, tile, scope, idAt) {
     reflectSelection();
     return true;
   }
-  if (event.ctrlKey || event.metaKey || event.target.closest(".select-check")) {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.target.closest(".select-check")) {
     if (state.selectionScope !== scope && state.selection.size) {
       state.selection.clear();  // picks from two different grids never mix
     }
@@ -920,7 +1009,8 @@ function selectAllVisible() {
 function toggleShortcuts(show) {
   const modal = $("shortcutModal");
   const wanted = show ?? modal.classList.contains("hidden");
-  modal.classList.toggle("hidden", !wanted);
+  if (wanted) showOverlay("shortcutModal", "shortcutClose");
+  else hideOverlay("shortcutModal");
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,7 +1135,7 @@ async function openPhoto(imageId, filename = "") {
   $("modalAlbumBtn").textContent = "Add to album";
   $("modalCopyBtn").textContent = "Copy image";
   $("modalRevealBtn").textContent = "Show in Explorer";
-  $("photoModal").classList.remove("hidden");
+  showOverlay("photoModal", "modalClose");
   resetZoom();
   // The grid row usually knows the media type; details confirm it below.
   const known = (state.modalIndex >= 0 ? ctx.list[state.modalIndex] : null)
@@ -1341,7 +1431,7 @@ function initZoom() {
 }
 
 function closePhoto() {
-  $("photoModal").classList.add("hidden");
+  hideOverlay("photoModal");
   $("modalImage").removeAttribute("src");
   delete $("modalImage").dataset.imageId;
   stopModalVideo();
@@ -1353,11 +1443,13 @@ function updateModalNav() {
   const ctx = modalContext();
   const i = state.modalIndex;
   const inResults = i >= 0 && ctx.list.length > 0;
-  const pages = Math.max(1, Math.ceil(state.total / state.perPage));
-  const canPage = !state.similarTo && !ctx.album;
-  const hasPrev = inResults && (i > 0 || (canPage && state.page > 1));
+  const total = ctx.album ? state.currentAlbum.total : state.total;
+  const page = ctx.album ? state.albumPage : state.page;
+  const pages = Math.max(1, Math.ceil(total / state.perPage));
+  const canPage = ctx.album || !state.similarTo;
+  const hasPrev = inResults && (i > 0 || (canPage && page > 1));
   const hasNext = inResults && (i < ctx.list.length - 1
-    || (canPage && state.page < pages));
+    || (canPage && page < pages));
   $("modalPrev").classList.toggle("hidden", !hasPrev);
   $("modalNext").classList.toggle("hidden", !hasNext);
 }
@@ -1372,9 +1464,19 @@ async function navigatePhoto(delta) {
     openPhoto(photo.image_id, photo.filename || "");
     return;
   }
-  // Walked off the page — fetch the neighbouring one and keep going. Albums
-  // and similar/pasted results are single, self-contained lists.
-  if (ctx.album || state.similarTo) return;
+  if (ctx.album) {
+    const nextPage = state.albumPage + delta;
+    const pages = Math.ceil(state.currentAlbum.total / state.perPage);
+    if (nextPage < 1 || nextPage > pages) return;
+    const albumId = state.currentAlbum.album_id;
+    const loaded = await openAlbum(albumId, nextPage);
+    if (loaded && !$("photoModal").classList.contains("hidden")) {
+      const photo = delta > 0 ? loaded.images[0] : loaded.images.at(-1);
+      if (photo) openPhoto(photo.image_id, photo.filename || "");
+    }
+    return;
+  }
+  if (state.similarTo) return;
   const pages = Math.max(1, Math.ceil(state.total / state.perPage));
   if (delta > 0 && state.page < pages) {
     await search(state.page + 1);
@@ -1641,7 +1743,7 @@ async function openPerson(personId) {
   state.forgetArmed = false;
   state.mergeArmedId = null;
 
-  $("personModal").classList.remove("hidden");
+  showOverlay("personModal", "personName");
   $("personName").value = person.name || "";
   $("personCover").innerHTML = coverHtml(person, "xl");
   $("personMeta").textContent =
@@ -1660,7 +1762,7 @@ async function openPerson(personId) {
 }
 
 function closePerson() {
-  $("personModal").classList.add("hidden");
+  hideOverlay("personModal");
   state.currentPerson = null;
 }
 
@@ -2105,6 +2207,7 @@ async function loadAlbums() {
 }
 
 async function loadAlbumsView() {
+  state.albumSeq += 1;
   $("albumDetail").classList.add("hidden");
   $("albumsHome").classList.remove("hidden");
   startLoad();
@@ -2156,7 +2259,11 @@ async function createAlbum(name, imageIds = []) {
   return album;
 }
 
-async function openAlbum(albumId) {
+async function openAlbum(albumId, page = null) {
+  albumId = Number(albumId);
+  if (state.currentAlbum?.album_id !== albumId && state.selectionScope === "album") clearSelection();
+  const seq = ++state.albumSeq;
+  const targetPage = page ?? (state.currentAlbum?.album_id === albumId ? state.albumPage : 1);
   state.albumDeleteArmed = false;
   $("albumDelete").textContent = "Delete album";
   $("albumsHome").classList.add("hidden");
@@ -2165,14 +2272,22 @@ async function openAlbum(albumId) {
   $("albumSuggestions").innerHTML = "";
   startLoad();
   try {
-    const detail = await request(`/albums/${albumId}?limit=500`);
+    let detail = await request(`/albums/${albumId}?page=${targetPage}&per_page=${state.perPage}`);
+    if (!detail.images.length && detail.total && targetPage > 1) {
+      const lastPage = Math.ceil(detail.total / state.perPage);
+      detail = await request(`/albums/${albumId}?page=${lastPage}&per_page=${state.perPage}`);
+    }
+    if (seq !== state.albumSeq) return;
     state.currentAlbum = detail;
+    state.albumPage = detail.page;
     $("albumTitle").value = detail.name;
     $("albumMeta").textContent =
       `${detail.photo_count} ${detail.photo_count === 1 ? "PHOTO" : "PHOTOS"}`;
     renderAlbumPhotos(detail);
-    loadAlbumSuggestions(albumId);
+    if (page == null) loadAlbumSuggestions(albumId);
+    return detail;
   } catch (error) {
+    if (seq !== state.albumSeq) return;
     showError(`Could not open the album: ${error.message}`);
     loadAlbumsView();
   } finally {
@@ -2182,13 +2297,19 @@ async function openAlbum(albumId) {
 
 function renderAlbumPhotos(detail) {
   const grid = $("albumPhotos");
+  state.selectionAnchor = -1;
   $("albumPhotosTitle").textContent = `Photos (${detail.images.length})`;
+  const pages = Math.max(1, Math.ceil(detail.total / detail.per_page));
+  $("albumPageLabel").textContent = `PAGE ${detail.page} / ${pages}`;
+  $("albumPrevPage").disabled = detail.page <= 1;
+  $("albumNextPage").disabled = !detail.has_more;
+  $("albumPager").classList.toggle("hidden", pages <= 1);
   if (!detail.images.length) {
     grid.innerHTML = '<div class="empty">Empty so far. Add photos from the suggestions above, or from any photo\'s "Add to album" button.</div>';
     return;
   }
   grid.innerHTML = detail.images.map((photo, i) => `
-    <div class="photo album-photo ${state.selection.has(photo.image_id) ? "selected" : ""}" data-image-id="${photo.image_id}" data-index="${i}">
+    <div class="photo album-photo ${state.selection.has(photo.image_id) ? "selected" : ""}" tabindex="0" role="button" aria-label="Open ${escapeHtml(photo.filename || "photo")}" data-image-id="${photo.image_id}" data-index="${i}">
       <img loading="lazy" src="${API}/images/${photo.image_id}/thumbnail?size=grid&format=webp" alt="${escapeHtml(photo.filename || "Photo")}">
       <span class="select-check" title="Select (Ctrl-click works too, Shift-click for a range)">✓</span>
       ${videoBadge(photo)}
@@ -2196,6 +2317,11 @@ function renderAlbumPhotos(detail) {
     </div>
   `).join("");
   grid.querySelectorAll(".album-photo").forEach((tile) => {
+    tile.addEventListener("keydown", event => {
+      if (event.target !== tile || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      tile.click();
+    });
     tile.addEventListener("click", (event) => {
       if (event.target.closest(".album-remove")) return;
       if (handleSelectClick(event, tile, "album",
@@ -2563,6 +2689,7 @@ async function cancelJob() {
 
 async function init() {
   initCuration();
+  initBrowseControls();
   $("folderPath").value = localStorage.getItem("photolib.lastFolder") || "";
   $("browseButton").addEventListener("click", () => chooseFolder(true));
   $("indexButton").addEventListener("click", startIndexFromSetup);
@@ -2593,6 +2720,8 @@ async function init() {
     }
   });
   $("albumBack").addEventListener("click", loadAlbumsView);
+  $("albumPrevPage").addEventListener("click", () => openAlbum(state.currentAlbum.album_id, state.albumPage - 1));
+  $("albumNextPage").addEventListener("click", () => openAlbum(state.currentAlbum.album_id, state.albumPage + 1));
   $("albumTitle").addEventListener("blur", saveAlbumTitle);
   $("albumTitle").addEventListener("keydown", (event) => {
     if (event.key === "Enter") saveAlbumTitle();
@@ -2737,14 +2866,15 @@ async function init() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (document.querySelector("dialog[open]")) return;
     const photoOpen = !$("photoModal").classList.contains("hidden");
     const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName);
     if (event.key === "Escape") {
       // Close only the topmost layer, so backing out of a photo opened
       // from a person still leaves the person open.
-      if (!$("shortcutModal").classList.contains("hidden")) toggleShortcuts(false);
-      else if (photoOpen) closePhoto();
-      else if (!$("personModal").classList.contains("hidden")) closePerson();
+      if (overlayStack.at(-1) === "shortcutModal") toggleShortcuts(false);
+      else if (overlayStack.at(-1) === "photoModal") closePhoto();
+      else if (overlayStack.at(-1) === "personModal") closePerson();
       else if (!$("selAlbumPanel").classList.contains("hidden")) {
         toggleSelectionAlbumPanel(false);
       } else if (state.selection.size) clearSelection();
@@ -2758,6 +2888,7 @@ async function init() {
       toggleShortcuts();
       return;
     }
+    if (overlayStack.length && overlayStack.at(-1) !== "photoModal") return;
     if (event.key === "/" && !photoOpen) {
       event.preventDefault();
       setView("photos");

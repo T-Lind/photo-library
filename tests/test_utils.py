@@ -68,6 +68,37 @@ def test_group_near_duplicates_on_empty_input():
     assert group_near_duplicates([]) == []
 
 
+def test_near_duplicates_can_differ_in_every_band():
+    base = 0x0123456789ABCDEF
+    changed = base ^ sum(1 << bit for bit in (0, 16, 32, 48))
+    assert group_near_duplicates([(1, base), (2, changed)], 6) == [[1, 2]]
+
+
+def test_large_equal_hash_bucket_is_not_discarded():
+    items = [(i, -1) for i in range(600)] + [(600, -2)]
+    assert group_near_duplicates(items, 1) == [list(range(601))]
+
+
+@pytest.mark.parametrize("distance", [0, 3, 4, 6, 7, 8, 12, 20, 64])
+def test_duplicate_groups_match_exhaustive_reference(distance):
+    rng = np.random.default_rng(42)
+    hashes = [int(v) for v in rng.integers(-(2 ** 63), 2 ** 63 - 1, size=80)]
+    base = hashes[0]
+    hashes.extend([base ^ sum(1 << bit for bit in range(n)) for n in range(1, 22)])
+    # Compute connected components independently from every eligible pair.
+    groups = [{i} for i in range(len(hashes))]
+    for a in range(len(hashes)):
+        for b in range(a):
+            if hamming(hashes[a], hashes[b]) <= distance:
+                left = next(g for g in groups if a in g)
+                right = next(g for g in groups if b in g)
+                if left is not right:
+                    left.update(right)
+                    groups.remove(right)
+    expected = sorted(sorted(g) for g in groups if len(g) > 1)
+    assert sorted(group_near_duplicates(enumerate(hashes), distance)) == expected
+
+
 # ---------------------------------------------------------------------------
 # EXIF
 # ---------------------------------------------------------------------------

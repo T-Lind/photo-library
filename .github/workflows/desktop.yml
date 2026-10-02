@@ -106,6 +106,14 @@ jobs:
           # This lock set has no torch or transformers; the frozen app
           # runs entirely on the pinned, Windows-tested ONNX Runtime.
           pip install -r requirements-desktop.txt
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # InsightFace requests the GUI OpenCV wheel, whose private Qt/X11
+            # libraries confuse linuxdeploy. The sidecar only processes pixels;
+            # use the same OpenCV release without a second window toolkit.
+            pip uninstall -y opencv-python
+            pip install --no-deps opencv-python-headless==4.11.0.86
+            python -c 'import cv2, numpy as np; from rapidocr_onnxruntime import RapidOCR; assert cv2.resize(np.zeros((16, 16, 3), dtype=np.uint8), (8, 8)).shape == (8, 8, 3); RapidOCR(); print(cv2.getBuildInformation())'
+          fi
 
       - name: Build the sidecar
         shell: bash
@@ -140,12 +148,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/src-tauri/binaries
-          rm -rf desktop/src-tauri/binaries/_internal
-          rm -f desktop/src-tauri/binaries/photolib-server-*
-          # Tauri resolves sidecars by target-triple suffix.
-          cp -r dist/photolib-server/* desktop/src-tauri/binaries/
-          mv "desktop/src-tauri/binaries/photolib-server${{ matrix.exe }}" \
-             "desktop/src-tauri/binaries/photolib-server-${{ matrix.triple }}${{ matrix.exe }}"
+          # Preserve the complete one-folder layout in the resource directory.
+          cp -a dist/photolib-server desktop/src-tauri/binaries/sidecar
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -159,15 +163,41 @@ jobs:
           sudo apt-get update
           # Tauri v2 links against webkit2gtk-4.1 (javascriptcoregtk-4.1); the
           # old 4.0 packages no longer satisfy the crate and fail the build.
+          # linuxdeploy's helper AppImages also need the FUSE 2 runtime.
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf \
-            libxdo-dev libssl-dev build-essential
+            libxdo-dev libssl-dev build-essential libfuse2
 
       - name: Build the installer
         working-directory: desktop
+        shell: bash
         run: |
+          set -o pipefail
           npm ci
-          npx tauri build --bundles "${{ matrix.bundles }}"
+          mkdir -p ../artifacts
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # PyInstaller normally supplies this search path at startup.
+            # linuxdeploy examines the shared objects directly instead.
+            mapfile -t sidecar_library_dirs < <(find "$PWD/src-tauri/binaries/sidecar/_internal" -type f -name '*.so*' -printf '%h\n' | sort -u)
+            sidecar_library_path=$(IFS=:; echo "${sidecar_library_dirs[*]}")
+            export LD_LIBRARY_PATH="$sidecar_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            while IFS= read -r -d '' library; do
+              dependencies=$(ldd "$library" 2>/dev/null || true)
+              if [[ "$dependencies" == *"not found"* ]]; then
+                printf 'Unresolved dependencies in %s:\n%s\n' "$library" "$dependencies"
+                exit 1
+              fi
+            done < <(find "$PWD/src-tauri/binaries/sidecar/_internal" -type f -name '*.so*' -print0)
+          fi
+          npx tauri build --verbose --bundles "${{ matrix.bundles }}" 2>&1 | tee ../artifacts/desktop-build.log
+
+      - name: Preserve installer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.os }}
+          path: artifacts/desktop-build.log
+          if-no-files-found: ignore
 
       - name: Guard the standard Windows installer size
         if: matrix.os == 'windows-latest' && env.MODEL_VARIANT == 'int8'
@@ -181,6 +211,19 @@ jobs:
             throw "Hybrid INT8 setup is $([math]::Round($installer.Length / 1MB)) MB; limit is 900 MB"
           }
           Write-Host "Hybrid INT8 setup: $([math]::Round($installer.Length / 1MB)) MB"
+
+      - name: Install the Windows package for verification
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $testInstall = Join-Path $PWD 'installer-smoke'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$testInstall" -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Installer exited with $($process.ExitCode)" }
+
+      - name: Verify the installed sidecar layout
+        shell: bash
+        run: python tools/verify_desktop_bundle.py
 
       - uses: actions/upload-artifact@v4
         with:
@@ -203,6 +246,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: photolib-*
 
       - uses: softprops/action-gh-release@v2
         with:
